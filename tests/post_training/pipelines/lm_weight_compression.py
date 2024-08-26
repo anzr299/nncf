@@ -105,7 +105,7 @@ class LMWeightCompression(BaseTestPipeline):
             self.model = self.model_hf.model
         else:
             raise RuntimeError(f"backend={self.backend.value} is not supported.")
-
+        
         # dump FP32 model
         if not (self.fp32_model_dir / self.OV_MODEL_NAME).exists():
             self._dump_model_fp32()
@@ -181,8 +181,9 @@ class LMWeightCompression(BaseTestPipeline):
             return
         if self.backend == BackendType.FX_TORCH: # This is used when converting torch model to fx since all the data and input is ready by this step. 
             self.dummy_tensor = next(iter(self.calibration_dataset.get_inference_data()))['input_ids']
-            with disable_patching():
-                self.model = capture_pre_autograd_graph(self.model_hf, args=(self.dummy_tensor,))
+            with torch.no_grad():
+                with disable_patching():
+                    self.model = capture_pre_autograd_graph(self.model_hf, args=(self.dummy_tensor,))
         print("Weight compression...")
         start_time = time.perf_counter()
         if self.memory_monitor:
@@ -215,10 +216,11 @@ class LMWeightCompression(BaseTestPipeline):
         elif self.backend == BackendType.TORCH:
             export_from_model(self.model_hf, self.output_model_dir, stateful=False, compression_option="fp32")
         elif self.backend == BackendType.FX_TORCH:
-            exported_model = torch.export.export(self.model, (self.dummy_tensor,))
-            ov_model = ov.convert_model(exported_model, example_input=self.dummy_tensor, input=self.input_size)
-            ov.serialize(ov_model, self.output_model_dir / self.OV_MODEL_NAME)
-            self.model_hf._save_config(self.output_model_dir)
+            with disable_patching():
+                exported_model = torch.export.export(self.model, (self.dummy_tensor,))
+                ov_model = ov.convert_model(exported_model, example_input=self.dummy_tensor, input=self.input_size)
+                ov.serialize(ov_model, self.output_model_dir / self.OV_MODEL_NAME)
+                self.model_hf._save_config(self.output_model_dir)
 
     def get_num_compressed(self) -> None:
         """
@@ -253,11 +255,8 @@ class LMWeightCompression(BaseTestPipeline):
         if self.backend == BackendType.OV:
             self.model_hf.save_pretrained(self.fp32_model_dir)
             self.model_hf._save_config(self.fp32_model_dir)
-        elif self.backend == BackendType.TORCH:
+        elif self.backend in [BackendType.TORCH, BackendType.FX_TORCH]:
             export_from_model(self.model_hf, self.fp32_model_dir, stateful=False, compression_option="fp32")
-        elif self.backend == BackendType.FX_TORCH:
-            exported_model = torch.export.export(self.model, (self.dummy_tensor,))
-            ov_model = ov.convert_model(exported_model, example_input=self.dummy_tensor, input=self.input_size)
 
     def _compress(self):
         """
