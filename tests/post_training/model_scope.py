@@ -413,7 +413,7 @@ WEIGHT_COMPRESSION_MODELS = [
         "compression_params": {
             "mode": CompressWeightsMode.INT8_ASYM,
         },
-        "backends": [BackendType.TORCH],
+        "backends": [BackendType.TORCH, BackendType.FX_TORCH],
     },
     {
         "reported_name": "tinyllama_data_aware_gptq",

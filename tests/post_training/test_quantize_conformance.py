@@ -340,11 +340,13 @@ def test_weight_compression(
     pipeline = None
     err_msg = None
     test_model_param = None
+    print("Starting...")
     start_time = time.perf_counter()
     try:
         if test_case_name not in wc_reference_data:
             raise RuntimeError(f"{test_case_name} is not defined in `wc_reference_data` fixture")
         test_model_param = WC_TEST_CASES[test_case_name]
+        print("test case params: ")
         maybe_skip_test_case(test_model_param, run_fp32_backend, run_torch_cuda_backend, batch_size)
         pipeline_cls = test_model_param["pipeline_cls"]
         pipeline_kwargs = create_pipeline_kwargs(test_model_param, subset_size, test_case_name, wc_reference_data)
@@ -358,6 +360,7 @@ def test_weight_compression(
                 "memory_monitor": memory_monitor,
             }
         )
+        print("Pipeline params created")
         pipeline: BaseTestPipeline = pipeline_cls(**pipeline_kwargs)
         pipeline.run()
     except Exception as e:

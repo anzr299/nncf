@@ -483,6 +483,7 @@ def compress_weights(
                 "TorchFX backend doesn`t supports scale estimation and AWQ algorithm, "
                 "but awq=True or scale_estimation=True or gptq=True is specified."
             )
+        dataset = None
         compression_weights_impl = fx_compression_weights_impl
 
     if backend == BackendType.OPENVINO:
@@ -517,8 +518,7 @@ def compress_weights(
         options = [all_layers, sensitivity_metric, dataset, awq, scale_estimation, gptq]
         if any(option is not None for option in options):
             raise AttributeError(
-                "INT8 modes do not support `all_layers`, `sensitivity_metric`, `awq`, `scale_estimation`, `gptq` "
-                "and `dataset` options. Set them to None."
+                all_layers, sensitivity_metric, dataset, awq, scale_estimation, gptq
             )
 
     if ratio is None:

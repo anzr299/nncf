@@ -35,7 +35,8 @@ from tests.shared.paths import TEST_ROOT
 from tools.memory_monitor import MemoryType
 from tools.memory_monitor import MemoryUnit
 from tools.memory_monitor import memory_monitor_context
-
+from torch._export import capture_pre_autograd_graph
+from nncf.torch import disable_patching
 
 @dataclass
 class WCTimeStats(StatsFromOutput):
@@ -80,7 +81,7 @@ class LMWeightCompression(BaseTestPipeline):
         is_stateful = self.params.get("is_stateful", False)
 
         # load model
-        if self.backend == BackendType.TORCH:
+        if self.backend in [BackendType.TORCH, BackendType.FX_TORCH]:
             if is_stateful:
                 raise RuntimeError(f"is_stateful={is_stateful} is not supported for PyTorch backend.")
 
@@ -95,7 +96,7 @@ class LMWeightCompression(BaseTestPipeline):
                 # export by model_id
                 self.model_hf = OVModelForCausalLM.from_pretrained(
                     self.model_id, export=True, load_in_8bit=False, compile=False, stateful=is_stateful
-                )
+                ) 
             else:
                 # no export, load from IR. Applicable for sequential run of test cases in local environment.
                 self.model_hf = OVModelForCausalLM.from_pretrained(
@@ -155,7 +156,7 @@ class LMWeightCompression(BaseTestPipeline):
                     shape = list(val.partial_shape.get_min_shape())
                     shape[0] = batch_size
                     inputs[name] = np.zeros(shape)
-            if self.backend == BackendType.TORCH:
+            if self.backend in [BackendType.TORCH, BackendType.FX_TORCH]:
                 for input_name in inputs:
                     inputs[input_name] = torch.from_numpy(inputs[input_name])
             return inputs
@@ -178,7 +179,10 @@ class LMWeightCompression(BaseTestPipeline):
     def compress(self) -> None:
         if self.backend == BackendType.FP32:
             return
-
+        if self.backend == BackendType.FX_TORCH: # This is used when converting torch model to fx since all the data and input is ready by this step. 
+            self.dummy_tensor = next(iter(self.calibration_dataset.get_inference_data()))['input_ids']
+            with disable_patching():
+                self.model = capture_pre_autograd_graph(self.model_hf, args=(self.dummy_tensor,))
         print("Weight compression...")
         start_time = time.perf_counter()
         if self.memory_monitor:
@@ -210,6 +214,11 @@ class LMWeightCompression(BaseTestPipeline):
             self.model_hf._save_config(self.output_model_dir)
         elif self.backend == BackendType.TORCH:
             export_from_model(self.model_hf, self.output_model_dir, stateful=False, compression_option="fp32")
+        elif self.backend == BackendType.FX_TORCH:
+            exported_model = torch.export.export(self.model, (self.dummy_tensor,))
+            ov_model = ov.convert_model(exported_model, example_input=self.dummy_tensor, input=self.input_size)
+            ov.serialize(ov_model, self.output_model_dir / self.OV_MODEL_NAME)
+            self.model_hf._save_config(self.output_model_dir)
 
     def get_num_compressed(self) -> None:
         """
@@ -218,7 +227,7 @@ class LMWeightCompression(BaseTestPipeline):
         num_int8 = 0
         num_int4 = 0
 
-        if self.backend == BackendType.TORCH:
+        if self.backend in [BackendType.TORCH, BackendType.FX_TORCH]:
             model = ov.Core().read_model(self.output_model_dir / self.OV_MODEL_NAME)
         else:
             model = self.model
@@ -246,6 +255,9 @@ class LMWeightCompression(BaseTestPipeline):
             self.model_hf._save_config(self.fp32_model_dir)
         elif self.backend == BackendType.TORCH:
             export_from_model(self.model_hf, self.fp32_model_dir, stateful=False, compression_option="fp32")
+        elif self.backend == BackendType.FX_TORCH:
+            exported_model = torch.export.export(self.model, (self.dummy_tensor,))
+            ov_model = ov.convert_model(exported_model, example_input=self.dummy_tensor, input=self.input_size)
 
     def _compress(self):
         """
