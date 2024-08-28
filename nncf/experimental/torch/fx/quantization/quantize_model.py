@@ -143,9 +143,8 @@ def compress_weights_impl(
         gptq,
         advanced_parameters,
     )
-    copied_model = deepcopy(model)
-    graph = NNCFGraphFactory.create(copied_model)
-    compressed_model = compression_algorithm.apply(copied_model, graph, dataset=dataset)
+    graph = NNCFGraphFactory.create(model)
+    compressed_model = compression_algorithm.apply(model, graph, dataset=dataset)
     compressed_model = GraphModule(compressed_model, compressed_model.graph)
     compressed_model = _disallow_eval_train(compressed_model)
 
