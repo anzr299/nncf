@@ -72,9 +72,8 @@ class GraphConverter:
         """
 
         nncf_graph = PTNNCFGraph()
-
         for source_node in model.graph.nodes:
-            node_type, node_metatype = GraphConverter._get_node_type_and_metatype(source_node)
+            node_type, node_metatype = GraphConverter._get_node_type_and_metatype(source_node, model)
 
             nncf_graph.add_nncf_node(
                 node_name=source_node.name,

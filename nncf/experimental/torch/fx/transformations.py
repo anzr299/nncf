@@ -79,6 +79,37 @@ def bias_update_transformation_builder(node: NNCFNode, value: torch.Tensor) -> T
     return bias_update_transformation
 
 
+def shared_constant_create_transformation_builder() -> TransformationFNType:
+    """
+    Return transformation which checks fx graph for shared constants, disconnects and
+    eliminates redundant shared constant while connecting singular shared constant.
+
+    :return: Transformation which attaches shared constants to nodes and removes redundant constants.
+    """
+
+    def shared_constant_create_transformation(model: torch.fx.GraphModule):
+        prev_targets = {}
+
+        for source_node in model.graph.nodes:
+            _replace_shared_weights(source_node, prev_targets)
+
+        model.graph.eliminate_dead_code()
+
+    return shared_constant_create_transformation
+
+
+def _replace_shared_weights(node: torch.fx.Node, prev_targets):
+    """
+    This function is responsible for checking the consumer node of
+    current node with previous nodes traversed by the loop
+    """
+    dist_node = list(node.users.keys())
+    if node.target in prev_targets and node.op in ("get_attr",):
+        dist_node[0].replace_input_with(node, prev_targets[node.target])
+    else:
+        prev_targets[node.target] = node
+
+
 def qdq_insertion_transformation_builder(
     quantizer: FakeQuantize, target_points: List[PTTargetPoint]
 ) -> TransformationFNType:
