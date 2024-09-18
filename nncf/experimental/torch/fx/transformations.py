@@ -10,7 +10,7 @@
 # limitations under the License.
 
 from copy import copy
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 import torch
 import torch.fx
@@ -160,7 +160,7 @@ def constant_update_transformation_builder(
     return constant_update_transformation
 
 
-def constant_update_fn(model: torch.fx.GraphModule, node: torch.fx.Node, value: torch.Tensor, input_port_id: int = 1):
+def constant_update_fn(model: torch.fx.GraphModule, node: torch.fx.Node, value: torch.Tensor, input_port_id: int = 1, updated_node_name: Optional[str] = None):
     """
     Updates constant of given node on the given input port id with given value.
 
@@ -170,8 +170,9 @@ def constant_update_fn(model: torch.fx.GraphModule, node: torch.fx.Node, value: 
     :param input_port_id: Target constant input port id.
     """
     graph = model.graph
+    node_name = updated_node_name if updated_node_name else node.name + "_updated_constant"
     with graph.inserting_before(node):
-        new_constant = create_getattr_from_value(model, graph, node.name + "_updated_constant", value)
+        new_constant = create_getattr_from_value(model, graph, node_name, value)
 
     args = list(node.args)
     # A bias node suppose to have constant on the second input port.
@@ -187,9 +188,10 @@ def constant_update_fn(model: torch.fx.GraphModule, node: torch.fx.Node, value: 
     new_constant.meta["val"] = value
 
     consumer_nodes = list(previous_const.users.keys())
-    args[input_port_id] = new_constant
+    # args[input_port_id] = new_constant
     for node in consumer_nodes:
         node.replace_input_with(previous_const, new_constant)
+    graph.erase_node(previous_const)
     graph.eliminate_dead_code()
 
 
@@ -507,6 +509,50 @@ def fuse_conv_bn(model: torch.fx.GraphModule) -> None:
     model.graph.eliminate_dead_code()
     model.recompile()
 
+def _remove_constant_qdq_transformation(model: torch.fx.GraphModule) -> None:
+    def pattern(weight, scale, zero_point, axis, low, high, dtype):
+        quantized = torch.ops.quantized_decomposed.quantize_per_channel.default(
+            weight, scale, zero_point, axis, low, high, dtype
+        )
+        dequantized = torch.ops.quantized_decomposed.dequantize_per_channel.default(
+            quantized, scale, zero_point, axis, low, high, dtype
+        )
+        return dequantized
+
+    def replacement(x, scale, zero_point, axis, low, high, dtype):
+        return torch.mul(x, scale)
+    
+    torch.fx.subgraph_rewriter.replace_pattern(model, pattern, replacement)
+
+def _compress_qdq_constant_transformation(model: torch.fx.GraphModule) -> None:
+    for node in model.graph.nodes:
+        if node.target == torch.ops.quantized_decomposed.quantize_per_channel.default:
+            input_tup = []
+            port_id = 0
+            _reshape_scale(model, node)
+            for params in node.args:
+                if isinstance(params, torch.fx.Node) and params.op == 'get_attr':
+                    value = get_tensor_constant_from_node(params, model)
+                    input_tup.append(value)
+                else:
+                    input_tup.append(params)
+            result = node.target(*tuple(input_tup))
+            constant_update_fn(model, node, result, port_id)
+
+def _reshape_scale(model, node: torch.fx.Node):
+    weight_node = node.all_input_nodes[0]
+    scale_node = node.all_input_nodes[1]
+    scale_value = get_tensor_constant_from_node(scale_node, model)
+    weight_value = get_tensor_constant_from_node(weight_node, model)
+    axis = node.args[3]
+    new_shape = [1] * weight_value.dim()
+    new_shape[axis] = scale_value.shape[0]
+    scale_value = scale_value.view(new_shape)
+    constant_update_fn(model, node, scale_value, 1, updated_node_name=scale_node.name+'_updated_constant')
+
+def compress_post_quantize_transformation(model: torch.fx.GraphModule):
+    _compress_qdq_constant_transformation(model)
+    _remove_constant_qdq_transformation(model)
 
 def apply_quantization_transformations(model: torch.fx.GraphModule) -> None:
     """
