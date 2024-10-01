@@ -151,10 +151,10 @@ def test_sanity(test_case: SanitySampleCase, tiny_imagenet_dataset):
                 elif(node.name == 'conv2d_scale_0'):
                     scale = get_tensor_constant_from_node(node, quantized_model)
                 elif(node.name == 'quantize_per_channel_default'):
+                    print(node.args)
                     quantized_value = node.target(int8_weight, scale, zp, 0, -128, 127, torch.int8)
                 elif(node.name == 'dequantize_per_channel_default'):
                     dequantized_value = node.target(quantized_value, scale, zp, 0, -128, 127, torch.int8)
-            print(quantized_value)
             torch.save(quantized_value, 'FX_int_8')
             # for node in quantized_model.graph.nodes:
             #     if(node.name == 'conv2d_scale_0_updated_constant0'):

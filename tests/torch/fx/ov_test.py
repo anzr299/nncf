@@ -25,15 +25,15 @@ def fake_quantize(input_data_values, input_low, input_high, output_low, output_h
 
 def ov_quantize(input_data_values, input_low, input_high, output_low, output_high, levels=256):
     # Clip the input values to be within the input range
-    x_clipped = np.clip(input_data_values, input_low, input_high)
+    x_clipped = torch.clip(input_data_values, input_low, input_high)
 
     # Perform the quantization step
-    quantized = np.round((x_clipped - input_low) / (input_high - input_low) * (levels - 1))
+    quantized = torch.round(((x_clipped - input_low) / (input_high - input_low) * (levels - 1)))
     
     # Map the quantized values back to the floating-point range
-    output = quantized / (levels - 1) * (output_high - output_low) + output_low
+    # output = quantized / (levels - 1) * (output_high - output_low) + output_low
     
-    return output
+    return quantized
 
 
 def convert_and_multiply_operation(tensor1_values, tensor2_values):
@@ -71,7 +71,7 @@ if fake_quantize_node:
         input_tensor = input_node.get_data()
         
         # Convert OpenVINO tensor to NumPy array for manipulation
-        
+        input_tensor = torch.from_numpy(input_tensor)
         input_values.append(input_tensor)
         print(f"Input {i}: Tensor shape: {input_tensor.shape}")
 
@@ -80,12 +80,13 @@ if fake_quantize_node:
     input_high = input_values[2]
     output_low = input_values[3]
     output_high = input_values[4] 
+
     quantized_output_func = ov_quantize(input_data, input_low, input_high, output_low, output_high)
     quantized_output = fake_quantize(input_data, input_low, input_high, output_low, output_high)
-    quantized_output_func = torch.from_numpy(quantized_output_func)
-    quantized_output = torch.from_numpy(quantized_output)
-    print(torch.all(quantized_output == quantized_output_func))
-    torch.save(quantized_output, 'OV_int8_values')
+    # quantized_output_func = torch.from_numpy(quantized_output_func)
+    # quantized_output = torch.from_numpy(quantized_output)
+    print(torch.all(quantized_output == quantized_output_func-128))
+    torch.save(quantized_output_func, 'OV_int8_values')
     print("Quantized Output:", quantized_output.dtype)
     # print(quantized_output.shape)
 
