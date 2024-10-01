@@ -26,9 +26,9 @@ from nncf.common.graph.transformations.commands import TargetType
 from nncf.common.graph.transformations.layout import TransformationLayout
 from nncf.experimental.torch.fx.model_transformer import FXModelTransformer
 from nncf.experimental.torch.fx.nncf_graph_builder import GraphConverter
-from nncf.experimental.torch.fx.transformations import _get_node_inputs
 from nncf.experimental.torch.fx.node_utils import get_graph_node_by_name
 from nncf.experimental.torch.fx.node_utils import get_tensor_constant_from_node
+from nncf.experimental.torch.fx.transformations import _get_node_inputs
 from nncf.experimental.torch.fx.transformations import constant_update_transformation_builder
 from nncf.experimental.torch.fx.transformations import output_insertion_transformation_builder
 from nncf.experimental.torch.fx.transformations import shared_constants_unification_transformation
@@ -180,6 +180,7 @@ def test_post_quantization_compression(model_case: ModelCase, quantization_param
                 assert input_tup[0].dtype == torch.int8
                 result = node.target(*tuple(input_tup))
                 assert result.dtype == torch.float32
+
 
 def count_constants(model) -> int:
     num_constant_nodes = 0

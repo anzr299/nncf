@@ -216,7 +216,7 @@ def constant_update_fn(
     # To ensure the updated node has the right order,
     # we insert constant node before the node placed at the highest order in topological order.
     with graph.inserting_before(consumer_nodes[0]):
-        new_constant = create_getattr_from_value(model, graph, node.name + "_updated_constant", value)
+        new_constant = create_getattr_from_value(model, graph, node_name, value)
 
     previous_const.replace_all_uses_with(new_constant, propagate_meta=True)
     graph.eliminate_dead_code()
@@ -649,7 +649,8 @@ def _reshape_scale(model, node: torch.fx.Node):
     axis = node.args[3]
     new_shape = [1] * weight_value.dim()
     new_shape[axis] = scale_value.shape[0]
-    scale_value = scale_value.view(new_shape)
+    scale_value = scale_value.reshape(new_shape)
+    print(scale_value.dtype)
     constant_update_fn(model, node, scale_value, 1, updated_node_name=scale_node.name + "_updated_constant")
 
 

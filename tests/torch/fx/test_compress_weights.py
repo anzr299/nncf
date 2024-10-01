@@ -136,6 +136,8 @@ def test_compress_weights_shared_weights(mocker, mode):
     for spy in spies:
         assert spy.call_count == 1
 
+    
+
 
 @pytest.mark.parametrize("mode", SUPPORTED_MODES)
 def test_compressed_model_inference(mode):
@@ -146,7 +148,8 @@ def test_compressed_model_inference(mode):
     exported_model_output = exported_model(input_ids)
     compressed_model = compress_weights(exported_model, mode=mode)
     compressed_model_outputs = compressed_model(input_ids)
-
+    quantized_model = torch.compile(compressed_model, backend="openvino", options = {"device" : "CPU", "model_caching" : True, "cache_dir": "./model_cache/compress"})
+    quantized_model(input_ids)
     assert (
         exported_model_output.shape == compressed_model_outputs.shape
     ), "Compressed model output shape is not equal to the model output shape"
