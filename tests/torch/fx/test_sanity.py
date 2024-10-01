@@ -134,27 +134,28 @@ def test_sanity(test_case: SanitySampleCase, tiny_imagenet_dataset):
             return data_item[0].to(device)
 
         calibration_dataset = nncf.Dataset(calibration_dataset, transform_fn)
-        loaded_value = npy_loader("C:/Users/anazir/Downloads/tensor (1).npy")
-        print(loaded_value)
+        # loaded_value = npy_loader("C:/Users/anazir/Downloads/tensor (1).npy")
+        # print(loaded_value)
         # loaded_value = torch.load('saved_tensor')
-        # with torch.no_grad():
-        #     ex_input = torch.ones((1, 3, 224, 224))
-        #     model.eval()
-        #     exported_model = capture_pre_autograd_graph(model, args=(ex_input,))
-        #     quantized_model = nncf.quantize(exported_model, calibration_dataset)
-        #     nncf.common.factory.NNCFGraphFactory.create(quantized_model).visualize_graph('graph1.dot')
-            # for node in quantized_model.graph.nodes:
-            #     if(node.name == '_param_constant0'):
-            #         int8_weight = get_tensor_constant_from_node(node, quantized_model)
-            #     elif(node.name == 'conv2d_zero_point_0'):
-            #         zp = get_tensor_constant_from_node(node, quantized_model)
-            #     elif(node.name == 'conv2d_scale_0'):
-            #         scale = get_tensor_constant_from_node(node, quantized_model)
-            #     elif(node.name == 'quantize_per_channel_default'):
-            #         quantized_value = node.target(int8_weight, scale, zp, 0, -128, 127, torch.int8)
-            #     elif(node.name == 'dequantize_per_channel_default'):
-            #         dequantized_value = node.target(quantized_value, scale, zp, 0, -128, 127, torch.int8)
-
+        with torch.no_grad():
+            ex_input = torch.ones((1, 3, 224, 224))
+            model.eval()
+            exported_model = capture_pre_autograd_graph(model, args=(ex_input,))
+            quantized_model = nncf.quantize(exported_model, calibration_dataset)
+            nncf.common.factory.NNCFGraphFactory.create(quantized_model).visualize_graph('graph1.dot')
+            for node in quantized_model.graph.nodes:
+                if(node.name == '_param_constant0'):
+                    int8_weight = get_tensor_constant_from_node(node, quantized_model)
+                elif(node.name == 'conv2d_zero_point_0'):
+                    zp = get_tensor_constant_from_node(node, quantized_model)
+                elif(node.name == 'conv2d_scale_0'):
+                    scale = get_tensor_constant_from_node(node, quantized_model)
+                elif(node.name == 'quantize_per_channel_default'):
+                    quantized_value = node.target(int8_weight, scale, zp, 0, -128, 127, torch.int8)
+                elif(node.name == 'dequantize_per_channel_default'):
+                    dequantized_value = node.target(quantized_value, scale, zp, 0, -128, 127, torch.int8)
+            print(quantized_value)
+            torch.save(quantized_value, 'FX_int_8')
             # for node in quantized_model.graph.nodes:
             #     if(node.name == 'conv2d_scale_0_updated_constant0'):
             #         scale = get_tensor_constant_from_node(node, quantized_model)
@@ -162,9 +163,9 @@ def test_sanity(test_case: SanitySampleCase, tiny_imagenet_dataset):
             #         int8_weight = get_tensor_constant_from_node(node, quantized_model)
             # dequantized_value = torch.mul(int8_weight, scale)
             # print(dequantized_value)
-            # torch.save(dequantized_value, 'saved_tensor')
+            # torch.save(dequantized_value, 'FX_int8')
             # print(torch.all(dequantized_value == loaded_value))
-        #     quantized_model = torch.compile(quantized_model, backend="openvino", options = {"device" : "CPU", "model_caching" : True, "cache_dir": "./model_cache"})
+            # quantized_model = torch.compile(quantized_model, backend="openvino", options = {"device" : "CPU", "model_caching" : True, "cache_dir": "./model_cache"})
         
         # _ = quantized_model(ex_input)
         # top1_int8 = validate(val_dataloader, quantized_model, device)
