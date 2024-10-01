@@ -27,11 +27,11 @@ def ov_quantize(input_data_values, input_low, input_high, output_low, output_hig
     # Clip the input values to be within the input range
     x_clipped = torch.clip(input_data_values, input_low, input_high)
 
-    # Perform the quantization step
-    quantized = torch.round(((x_clipped - input_low) / (input_high - input_low) * (levels - 1)))
+    # Quantize
+    quantized = torch.round(((x_clipped - input_low) / (input_high - input_low) * (levels - 1)) - 128)
     
-    # Map the quantized values back to the floating-point range
-    # output = quantized / (levels - 1) * (output_high - output_low) + output_low
+    # De-Quantize
+    output = quantized / (levels - 1) * (output_high - output_low) + output_low
     
     return quantized
 
