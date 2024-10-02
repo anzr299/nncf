@@ -122,6 +122,12 @@ def count_q_dq(model: torch.fx.GraphModule):
 def npy_loader(path):
     return torch.from_numpy(np.load(path))
 
+def fx_quantize(weight, scale, zp, quant_min, quant_max):
+    res = torch.clamp(
+        torch.round(weight * (1.0 / scale)) + zp, quant_min, quant_max
+    )
+    return res
+
 @pytest.mark.parametrize("test_case", MODELS)
 def test_sanity(test_case: SanitySampleCase, tiny_imagenet_dataset):
     with disable_patching():
@@ -145,17 +151,21 @@ def test_sanity(test_case: SanitySampleCase, tiny_imagenet_dataset):
             nncf.common.factory.NNCFGraphFactory.create(quantized_model).visualize_graph('graph1.dot')
             for node in quantized_model.graph.nodes:
                 if(node.name == '_param_constant0'):
-                    int8_weight = get_tensor_constant_from_node(node, quantized_model)
+                    weight = get_tensor_constant_from_node(node, quantized_model)
                 elif(node.name == 'conv2d_zero_point_0'):
                     zp = get_tensor_constant_from_node(node, quantized_model)
                 elif(node.name == 'conv2d_scale_0'):
                     scale = get_tensor_constant_from_node(node, quantized_model)
                 elif(node.name == 'quantize_per_channel_default'):
-                    quantized_value = node.target(int8_weight, scale, zp, 0, -128, 127, torch.int8)
+                    quantized_value = node.target(weight, scale, zp, 0, -128, 127, torch.uint8)
                 elif(node.name == 'dequantize_per_channel_default'):
-                    dequantized_value = node.target(quantized_value, scale, zp, 0, -128, 127, torch.int8)
-            torch.save(quantized_value, 'FX_int_8')
-            print(quantized_value)
+                    dequantized_value = node.target(quantized_value, scale, zp, 0, -128, 127, torch.uint8)
+            # torch.save(scale, 'FX_int_8_scale')
+            scale = scale.reshape([64,1,1,1])
+            zp = zp.reshape([64, 1, 1, 1])
+            print(scale.shape, weight.shape)
+            int8_weight = fx_quantize(weight, scale, zp, -128, 127)
+            print(torch.all(quantized_value == int8_weight))
             # for node in quantized_model.graph.nodes:
             #     if(node.name == 'conv2d_scale_0_updated_constant0'):
             #         scale = get_tensor_constant_from_node(node, quantized_model)
@@ -163,7 +173,7 @@ def test_sanity(test_case: SanitySampleCase, tiny_imagenet_dataset):
             #         int8_weight = get_tensor_constant_from_node(node, quantized_model)
             # dequantized_value = torch.mul(int8_weight, scale)
             # print(dequantized_value)
-            # torch.save(dequantized_value, 'FX_int8')
+            torch.save(int8_weight, 'FX_int8')
             # print(torch.all(dequantized_value == loaded_value))
             # quantized_model = torch.compile(quantized_model, backend="openvino", options = {"device" : "CPU", "model_caching" : True, "cache_dir": "./model_cache"})
         

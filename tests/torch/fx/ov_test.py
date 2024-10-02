@@ -23,16 +23,49 @@ def fake_quantize(input_data_values, input_low, input_high, output_low, output_h
     output_data = np.array(output_tensor[0].data)
     return output_data
 
+def ov_quantize_test(input_data_values, input_low, input_high, output_low, output_high, levels=256):
+    # Clip the input values to be within the input range
+    quantum = (input_high-input_low)/255
+    problematic_value = input_data_values[34][1][5][4]
+    ind = 34
+    # problematic_value = (problematic_value - quantum[ind]/2).reshape(problematic_value.shape)
+    x_clipped = torch.clamp(problematic_value, input_low[ind], input_high[ind])
+
+    # Perform the quantization step
+    quantized = ((x_clipped - input_low[ind]) / (input_high[ind] - input_low[ind])) * (levels - 1) - 128
+    print(f'FP Value: {problematic_value}')
+    print(f"OV Quantized Value {quantized.item()}")
+    print(f'Quantum: {quantum[ind].item()}')
+    # De-Quantize
+    # output = ((quantized / (levels - 1)) * (output_high - output_low)) - (quantum/2)
+
+    scale = input_low[ind]/-128
+    res = torch.round(torch.clamp(
+        problematic_value / scale, -128, 127
+    ))
+    print(f'Torch Quantized Value: {res.to(torch.int8).item()}')
+    # res *= scale
+
+    # print(torch.all(res == output))
+        
+    return quantized
+
+
 def ov_quantize(input_data_values, input_low, input_high, output_low, output_high, levels=256):
     # Clip the input values to be within the input range
-    x_clipped = torch.clip(input_data_values, input_low, input_high)
-
-    # Quantize
-    quantized = torch.round(((x_clipped - input_low) / (input_high - input_low) * (levels - 1)) - 128)
-    
+    quantum = (input_high-input_low)/255
+    input_data_values = input_data_values - (quantum/255)
+    x_clipped = torch.clamp(input_data_values, input_low, input_high)
+    # Perform the quantization step
+    quantized = torch.round(((x_clipped - input_low) / (input_high - input_low)) * (levels - 1)) - 128
     # De-Quantize
-    output = quantized / (levels - 1) * (output_high - output_low) + output_low
-    
+    # output = ((quantized / (levels - 1)) * (output_high - output_low)) - (quantum/2)
+    scale = input_low/-128
+    res = torch.round(torch.clamp(
+        input_data_values / scale, -128, 127
+    ))
+    # res *= scale
+    # print(torch.all(res == output))
     return quantized
 
 
@@ -60,6 +93,7 @@ for node in model.get_ops():
 if fake_quantize_node:
     abc = None
     num_inputs = fake_quantize_node.get_input_size()
+    print(fake_quantize_node.get_attributes())
     # print(f"The FakeQuantize node has {num_inputs} inputs:")
     input_values = [] 
     for i in range(num_inputs):
@@ -81,11 +115,16 @@ if fake_quantize_node:
     output_low = input_values[3]
     output_high = input_values[4] 
 
+    torch.save(input_high, 'OV_input_high')
+    torch.save(input_low, 'OV_input_low')
+
     quantized_output_func = ov_quantize(input_data, input_low, input_high, output_low, output_high)
+    ov_quantize_test(input_data, input_low, input_high, output_low, output_high)
+
     quantized_output = fake_quantize(input_data, input_low, input_high, output_low, output_high)
     # quantized_output_func = torch.from_numpy(quantized_output_func)
     # quantized_output = torch.from_numpy(quantized_output)
-    print(torch.all(quantized_output == quantized_output_func-128))
+
     torch.save(quantized_output_func, 'OV_int8_values')
     print("Quantized Output:", quantized_output.dtype)
     # print(quantized_output.shape)
