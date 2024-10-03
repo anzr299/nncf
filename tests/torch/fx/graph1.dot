@@ -28,7 +28,7 @@ strict digraph  {
 "26 conv2d_2_zero_point_0";
 "27 quantize_per_channel_default_2";
 "28 dequantize_per_channel_default_2";
-"29 layer1_0_conv2_weight_bias_0_0";
+"29 add__tensor_2_updated_constant0_0";
 "30 conv2d_2";
 "31 quantize_per_tensor_default_3";
 "32 dequantize_per_tensor_default_3";
@@ -52,7 +52,7 @@ strict digraph  {
 "50 conv2d_4_zero_point_0";
 "51 quantize_per_channel_default_4";
 "52 dequantize_per_channel_default_4";
-"53 layer1_1_conv2_weight_bias_0_0";
+"53 add__tensor_4_updated_constant0_0";
 "54 conv2d_4";
 "55 quantize_per_tensor_default_6";
 "56 dequantize_per_tensor_default_7";
@@ -76,7 +76,7 @@ strict digraph  {
 "74 conv2d_6_zero_point_0";
 "75 quantize_per_channel_default_6";
 "76 dequantize_per_channel_default_6";
-"77 layer2_0_conv2_weight_bias_0_0";
+"77 add__tensor_6_updated_constant0_0";
 "78 conv2d_6";
 "79 quantize_per_tensor_default_9";
 "80 dequantize_per_tensor_default_11";
@@ -85,7 +85,7 @@ strict digraph  {
 "83 conv2d_7_zero_point_0";
 "84 quantize_per_channel_default_7";
 "85 dequantize_per_channel_default_7";
-"86 layer2_0_downsample_0_weight_bias_0_0";
+"86 add__tensor_7_updated_constant0_0";
 "87 conv2d_7";
 "88 quantize_per_tensor_default_10";
 "89 dequantize_per_tensor_default_12";
@@ -279,7 +279,7 @@ strict digraph  {
 "26 conv2d_2_zero_point_0" -> "28 dequantize_per_channel_default_2"  [label="(64,) \n0 -> 2", style=solid];
 "27 quantize_per_channel_default_2" -> "28 dequantize_per_channel_default_2"  [label="(64, 64, 3, 3) \n0 -> 0", style=solid];
 "28 dequantize_per_channel_default_2" -> "30 conv2d_2"  [label="(64, 64, 3, 3) \n0 -> 1", style=solid];
-"29 layer1_0_conv2_weight_bias_0_0" -> "30 conv2d_2"  [label="(64,) \n0 -> 2", style=solid];
+"29 add__tensor_2_updated_constant0_0" -> "30 conv2d_2"  [label="(64,) \n0 -> 2", style=solid];
 "30 conv2d_2" -> "31 quantize_per_tensor_default_3"  [label="(1, 64, 56, 56) \n0 -> 0", style=solid];
 "31 quantize_per_tensor_default_3" -> "32 dequantize_per_tensor_default_3"  [label="(1, 64, 56, 56) \n0 -> 0", style=solid];
 "32 dequantize_per_tensor_default_3" -> "33 add_"  [label="(1, 64, 56, 56) \n0 -> 0", style=solid];
@@ -308,7 +308,7 @@ strict digraph  {
 "50 conv2d_4_zero_point_0" -> "52 dequantize_per_channel_default_4"  [label="(64,) \n0 -> 2", style=solid];
 "51 quantize_per_channel_default_4" -> "52 dequantize_per_channel_default_4"  [label="(64, 64, 3, 3) \n0 -> 0", style=solid];
 "52 dequantize_per_channel_default_4" -> "54 conv2d_4"  [label="(64, 64, 3, 3) \n0 -> 1", style=solid];
-"53 layer1_1_conv2_weight_bias_0_0" -> "54 conv2d_4"  [label="(64,) \n0 -> 2", style=solid];
+"53 add__tensor_4_updated_constant0_0" -> "54 conv2d_4"  [label="(64,) \n0 -> 2", style=solid];
 "54 conv2d_4" -> "55 quantize_per_tensor_default_6"  [label="(1, 64, 56, 56) \n0 -> 0", style=solid];
 "55 quantize_per_tensor_default_6" -> "56 dequantize_per_tensor_default_7"  [label="(1, 64, 56, 56) \n0 -> 0", style=solid];
 "56 dequantize_per_tensor_default_7" -> "57 add__1"  [label="(1, 64, 56, 56) \n0 -> 0", style=solid];
@@ -337,7 +337,7 @@ strict digraph  {
 "74 conv2d_6_zero_point_0" -> "76 dequantize_per_channel_default_6"  [label="(128,) \n0 -> 2", style=solid];
 "75 quantize_per_channel_default_6" -> "76 dequantize_per_channel_default_6"  [label="(128, 128, 3, 3) \n0 -> 0", style=solid];
 "76 dequantize_per_channel_default_6" -> "78 conv2d_6"  [label="(128, 128, 3, 3) \n0 -> 1", style=solid];
-"77 layer2_0_conv2_weight_bias_0_0" -> "78 conv2d_6"  [label="(128,) \n0 -> 2", style=solid];
+"77 add__tensor_6_updated_constant0_0" -> "78 conv2d_6"  [label="(128,) \n0 -> 2", style=solid];
 "78 conv2d_6" -> "79 quantize_per_tensor_default_9"  [label="(1, 128, 28, 28) \n0 -> 0", style=solid];
 "79 quantize_per_tensor_default_9" -> "80 dequantize_per_tensor_default_11"  [label="(1, 128, 28, 28) \n0 -> 0", style=solid];
 "80 dequantize_per_tensor_default_11" -> "90 add__2"  [label="(1, 128, 28, 28) \n0 -> 0", style=solid];
@@ -348,7 +348,7 @@ strict digraph  {
 "83 conv2d_7_zero_point_0" -> "85 dequantize_per_channel_default_7"  [label="(128,) \n0 -> 2", style=solid];
 "84 quantize_per_channel_default_7" -> "85 dequantize_per_channel_default_7"  [label="(128, 64, 1, 1) \n0 -> 0", style=solid];
 "85 dequantize_per_channel_default_7" -> "87 conv2d_7"  [label="(128, 64, 1, 1) \n0 -> 1", style=solid];
-"86 layer2_0_downsample_0_weight_bias_0_0" -> "87 conv2d_7"  [label="(128,) \n0 -> 2", style=solid];
+"86 add__tensor_7_updated_constant0_0" -> "87 conv2d_7"  [label="(128,) \n0 -> 2", style=solid];
 "87 conv2d_7" -> "88 quantize_per_tensor_default_10"  [label="(1, 128, 28, 28) \n0 -> 0", style=solid];
 "88 quantize_per_tensor_default_10" -> "89 dequantize_per_tensor_default_12"  [label="(1, 128, 28, 28) \n0 -> 0", style=solid];
 "89 dequantize_per_tensor_default_12" -> "90 add__2"  [label="(1, 128, 28, 28) \n0 -> 1", style=solid];
