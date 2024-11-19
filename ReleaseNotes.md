@@ -26,6 +26,7 @@ Post-training Quantization:
   - [Post-Training Optimization of Qwen2Audio Model](https://github.com/openvinotoolkit/openvino_notebooks/blob/latest/notebooks/qwen2-audio/qwen2-audio.ipynb)
   - [Post-Training Optimization of NuExtract Model](https://github.com/openvinotoolkit/openvino_notebooks/blob/latest/notebooks/nuextract-structure-extraction/nuextract-structure-extraction.ipynb)
   - [Post-Training Optimization of MiniCPM-V2 Model](https://github.com/openvinotoolkit/openvino_notebooks/blob/latest/notebooks/minicpm-v-multimodal-chatbot/minicpm-v-multimodal-chatbot.ipynb)
+  - [Post-Training Optimization of Stable Diffusion v3 Model in Torch FX Representation](https://github.com/openvinotoolkit/openvino_notebooks/blob/latest/notebooks/stable-diffusion-v3/stable-diffusion-v3-torch-fx.ipynb)
 
 Compression-aware training:
 
