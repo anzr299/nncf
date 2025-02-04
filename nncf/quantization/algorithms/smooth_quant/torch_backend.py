@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -122,7 +122,8 @@ class PTSmoothQuantAlgoBackend(SmoothQuantAlgoBackend):
     def get_weight_value(node_with_weight: NNCFNode, model: NNCFNetwork, nncf_graph: NNCFGraph) -> Tensor:
         weight_node = get_const_node(node_with_weight, node_with_weight.metatype.weight_port_ids[0], nncf_graph)
         if weight_node is None:
-            raise RuntimeError(f"{node_with_weight} node has no weight node.")
+            msg = f"{node_with_weight} node has no weight node."
+            raise RuntimeError(msg)
         weight_data = get_const_data(weight_node, model)
         return Tensor(weight_data)
 

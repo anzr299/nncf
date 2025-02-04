@@ -42,7 +42,8 @@ PT_PRE_LAYER_TARGET_TYPE = TargetType.OPERATOR_PRE_HOOK
 class FXSQMultiply(torch.nn.Module):
     def __init__(self, scale: torch.Tensor):
         super().__init__()
-        self._scale_value = scale
+        self.register_buffer("_scale_value", scale)
+        self._scale_value: torch.Tensor
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.mul(x, self._scale_value)
@@ -98,7 +99,8 @@ class FXSmoothQuantAlgoBackend(SmoothQuantAlgoBackend):
     def get_weight_value(node_with_weight: NNCFNode, model: torch.fx.GraphModule, nncf_graph: NNCFGraph) -> Tensor:
         weight_node = get_const_node(node_with_weight, node_with_weight.metatype.weight_port_ids[0], nncf_graph)
         if weight_node is None:
-            raise RuntimeError(f"{node_with_weight} node has no weight node.")
+            msg = f"{node_with_weight} node has no weight node."
+            raise RuntimeError(msg)
         graph_node = get_graph_node_by_name(model.graph, weight_node.node_name)
         weight_data = get_tensor_constant_from_node(graph_node, model)
         return Tensor(weight_data.data)
