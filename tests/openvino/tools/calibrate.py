@@ -355,7 +355,7 @@ def map_ignored_scope(ignored):
     if operations is not None:
         for op in operations:
             if op.get("attributes") is not None:
-                msg = '"attributes" in the ignored operations ' "are not supported"
+                msg = '"attributes" in the ignored operations are not supported'
                 raise ValueError(msg)
             ignored_operations.append(op["type"])
     return {"ignored_scope": IgnoredScope(names=ignored.get("scope", []), types=ignored_operations)}
@@ -1100,7 +1100,6 @@ def update_nncf_algorithms_config(nncf_algorithms_config: Dict[str, Dict[str, An
 
 
 class EnvInfo:
-
     @staticmethod
     def print_info() -> None:
         """
