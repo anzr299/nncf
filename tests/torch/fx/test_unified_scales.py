@@ -1,4 +1,4 @@
-# Copyright (c) 2024 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -11,19 +11,21 @@
 
 import torch
 
-from nncf.torch.nncf_network import NNCFNetwork
 from tests.cross_fw.test_templates.test_unified_scales import TemplateTestUnifiedScales
 from tests.torch.fx.helpers import get_torch_fx_model_q_transformed
 
 
 class TestUnifiedScales(TemplateTestUnifiedScales):
-    def get_backend_specific_model(self, model: torch.nn.Module) -> NNCFNetwork:
-        input_shape = model.INPUT_SHAPE
+    def get_backend_specific_model(self, model: torch.nn.Module) -> torch.fx.GraphModule:
+        q_input_shape = model.Q_INPUT_SHAPE
+        kv_input_shape = model.KV_INPUT_SHAPE
         backend_model = get_torch_fx_model_q_transformed(
             model,
             (
-                torch.randn(input_shape),
-                torch.randn(input_shape),
+                torch.ones(q_input_shape),
+                torch.ones(q_input_shape),
+                torch.ones(kv_input_shape),
+                torch.ones(kv_input_shape),
             ),
         )
 

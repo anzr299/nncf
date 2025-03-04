@@ -50,7 +50,8 @@ def fixture_use_avx2():
 @pytest.fixture(scope="session", name="data_dir")
 def fixture_data(pytestconfig):
     if pytestconfig.getoption("data") is None:
-        raise ValueError("This test requires the --data argument to be specified.")
+        msg = "This test requires the --data argument to be specified."
+        raise ValueError(msg)
     return Path(pytestconfig.getoption("data"))
 
 
@@ -87,6 +88,11 @@ def fixture_run_torch_cuda_backend(pytestconfig):
 @pytest.fixture(scope="session", name="run_benchmark_app")
 def fixture_run_benchmark_app(pytestconfig):
     return pytestconfig.getoption("benchmark")
+
+
+@pytest.fixture(scope="session", name="torch_compile_validation")
+def fixture_torch_compile_validation(pytestconfig):
+    return pytestconfig.getoption("torch_compile_validation")
 
 
 @pytest.fixture(scope="session", name="extra_columns")
@@ -207,8 +213,11 @@ def fixture_wc_report_data(output_dir, run_benchmark_app, pytestconfig):
 def maybe_skip_test_case(test_model_param, run_fp32_backend, run_torch_cuda_backend, batch_size):
     if test_model_param["backend"] == BackendType.FP32 and not run_fp32_backend:
         pytest.skip("To run test for not quantized model use --fp32 argument")
-    if test_model_param["backend"] == BackendType.CUDA_TORCH and not run_torch_cuda_backend:
-        pytest.skip("To run test for CUDA_TORCH backend use --cuda argument")
+    if (
+        test_model_param["backend"] in [BackendType.CUDA_TORCH, BackendType.CUDA_FX_TORCH]
+        and not run_torch_cuda_backend
+    ):
+        pytest.skip(f"To run test for {test_model_param['backend'].value} backend use --cuda argument")
     if batch_size and batch_size > 1 and test_model_param.get("batch_size", 1) == 1:
         pytest.skip("The model does not support batch_size > 1. Please use --batch-size 1.")
     return test_model_param
@@ -280,6 +289,7 @@ def test_ptq_quantization(
     run_torch_cuda_backend: bool,
     subset_size: Optional[int],
     run_benchmark_app: bool,
+    torch_compile_validation: bool,
     capsys: pytest.CaptureFixture,
     extra_columns: bool,
     memory_monitor: bool,
@@ -290,7 +300,8 @@ def test_ptq_quantization(
     start_time = time.perf_counter()
     try:
         if test_case_name not in ptq_reference_data:
-            raise nncf.ValidationError(f"{test_case_name} does not exist in 'reference_data.yaml'")
+            msg = f"{test_case_name} does not exist in 'reference_data.yaml'"
+            raise nncf.ValidationError(msg)
         test_model_param = PTQ_TEST_CASES[test_case_name]
         maybe_skip_test_case(test_model_param, run_fp32_backend, run_torch_cuda_backend, batch_size)
         pipeline_cls = test_model_param["pipeline_cls"]
@@ -307,6 +318,7 @@ def test_ptq_quantization(
                 "data_dir": data_dir,
                 "no_eval": no_eval,
                 "run_benchmark_app": run_benchmark_app,
+                "torch_compile_validation": torch_compile_validation,
                 "batch_size": batch_size,
                 "memory_monitor": memory_monitor,
             }
