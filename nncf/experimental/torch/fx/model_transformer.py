@@ -10,7 +10,6 @@
 # limitations under the License.
 
 from collections import defaultdict
-from typing import List, Set
 
 import torch
 import torch.fx
@@ -42,7 +41,7 @@ class FXModelTransformer(ModelTransformer):
         Transforms the target model according to given transformation layout.
 
         :param transformation_layout: Given transformation layout.
-        :return: Target model transformered according to the given transformation layout.
+        :return: Target model transformed according to the given transformation layout.
         """
         # TODO(dlyakhov): Manage priorities of transformations.
         transformations = transformation_layout.transformations
@@ -64,9 +63,9 @@ class FXModelTransformer(ModelTransformer):
 
     @staticmethod
     def _traverse_graph(
-        input_nodes: List[torch.fx.Node],
-        stop_nodes: Set[torch.fx.Node],
-        visited: Set[torch.fx.Node],
+        input_nodes: list[torch.fx.Node],
+        stop_nodes: set[torch.fx.Node],
+        visited: set[torch.fx.Node],
     ) -> None:
         """
         Traverses through the graph starting with the input nodes and
@@ -92,7 +91,7 @@ class FXModelTransformer(ModelTransformer):
     @staticmethod
     def _apply_model_extraction(
         model: torch.fx.GraphModule,
-        transformations: List[PTModelExtractionCommand],
+        transformations: list[PTModelExtractionCommand],
     ) -> torch.fx.GraphModule:
         """
         Returns a submodel extracted from the given model by the given transformation.
@@ -192,7 +191,7 @@ class FXModelTransformer(ModelTransformer):
     @staticmethod
     def _apply_transformation(
         model: torch.fx.GraphModule,
-        transformations: List[FXApplyTransformationCommand],
+        transformations: list[FXApplyTransformationCommand],
     ) -> torch.fx.GraphModule:
         """
         Applies transformations to the given model.

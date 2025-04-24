@@ -11,7 +11,7 @@
 
 from copy import deepcopy
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import nncf
 from nncf.common.graph import NNCFNode
@@ -27,14 +27,22 @@ from nncf.parameters import TargetDevice
 @api()
 class QuantizationScheme(StrEnum):
     """
-    Basic enumeration for quantization scheme specification.
+    Enumeration for specifying quantization schemes.
 
-    :param SYMMETRIC:
-    :param ASYMMETRIC:
+    :param SYMMETRIC: Symmetric quantization where the range is defined by a single parameter - scale.
+        This range can include both negative and positive values if signed, or only positive values if unsigned.
+    :param ASYMMETRIC: Asymmetric quantization where the range is defined by two parameters - input_low and input_high,
+        representing the lower and upper boundaries of the range, respectively.
+    :param SYMMETRIC_LORA: Symmetric quantization with Low-Rank Adapters (LoRA), involving the sum of weights and
+        the multiplication of low-rank adapters.
+    :param ASYMMETRIC_LORA: Asymmetric quantization with Low-Rank Adapters (LoRA), involving the sum of weights and
+        the multiplication of low-rank adapters.
     """
 
     SYMMETRIC = "symmetric"
     ASYMMETRIC = "asymmetric"
+    SYMMETRIC_LORA = "symmetric_lora"
+    ASYMMETRIC_LORA = "asymmetric_lora"
 
 
 class QuantizerConfig:
@@ -115,7 +123,7 @@ class QuantizerConfig:
             and self.mode == other_qconfig.mode
         )
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """
         Returns a dictionary with Python data structures (dict, list, tuple, str, int, float, True, False, None) that
         represents state of the object.
@@ -131,7 +139,7 @@ class QuantizerConfig:
         }
 
     @classmethod
-    def from_state(cls, state: Dict[str, Any]) -> "QuantizerConfig":
+    def from_state(cls, state: dict[str, Any]) -> "QuantizerConfig":
         """
         Creates the object from its state.
 
@@ -218,7 +226,7 @@ class QuantizationConstraints:
         return QuantizationConstraints(**new_dict)
 
     @classmethod
-    def from_config_dict(cls, config_dict: Dict[str, Any]) -> "QuantizationConstraints":
+    def from_config_dict(cls, config_dict: dict[str, Any]) -> "QuantizationConstraints":
         return cls(
             num_bits=config_dict.get("bits"),
             mode=config_dict.get("mode"),
@@ -230,8 +238,8 @@ class QuantizationConstraints:
         self,
         node_name: NNCFNodeName,
         target_device: Optional[TargetDevice],
-        quantizer_config_list: List[QuantizerConfig],
-    ) -> List[QuantizerConfig]:
+        quantizer_config_list: list[QuantizerConfig],
+    ) -> list[QuantizerConfig]:
         assert quantizer_config_list is not None
 
         constrained_quantizer_config_list = list(filter(self.is_config_compatible, quantizer_config_list))
@@ -254,7 +262,7 @@ class QuantizerGroup(Enum):
 
 
 class QuantizableWeightedLayerNode:
-    def __init__(self, node: NNCFNode, qconfig_list: List[QuantizerConfig]):
+    def __init__(self, node: NNCFNode, qconfig_list: list[QuantizerConfig]):
         self.node = node
         self.qconfig_list = qconfig_list
 
@@ -338,7 +346,7 @@ class QuantizationPreset(StrEnum):
     PERFORMANCE = "performance"
     MIXED = "mixed"
 
-    def get_params_configured_by_preset(self, quant_group: QuantizerGroup) -> Dict[str, str]:
+    def get_params_configured_by_preset(self, quant_group: QuantizerGroup) -> dict[str, str]:
         if quant_group == QuantizerGroup.ACTIVATIONS and self == QuantizationPreset.MIXED:
             return {"mode": QuantizationScheme.ASYMMETRIC}
         return {"mode": QuantizationScheme.SYMMETRIC}

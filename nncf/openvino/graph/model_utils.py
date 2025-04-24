@@ -9,17 +9,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections import deque
-from typing import List
 
-import openvino.runtime as ov
+import openvino as ov
 
 from nncf.common.factory import ModelTransformerFactory
 from nncf.common.graph.graph import NNCFGraph
 from nncf.common.graph.graph import NNCFNode
 from nncf.common.graph.transformations.layout import TransformationLayout
+from nncf.common.quantization.quantizer_propagation.structs import QuantizationTrait
 from nncf.openvino.graph.metatypes.groups import FAKE_QUANTIZE_OPERATIONS
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVReadValueMetatype
 from nncf.openvino.graph.transformations.command_creation import OVCommandCreator
+from nncf.openvino.quantization.default_quantization import DEFAULT_OV_QUANT_TRAIT_TO_OP_DICT
 
 
 def remove_fq_from_inputs(model: ov.Model, graph: NNCFGraph) -> ov.Model:
@@ -52,14 +53,20 @@ def remove_fq_from_inputs(model: ov.Model, graph: NNCFGraph) -> ov.Model:
     return model_transformer.transform(transformation_layout)
 
 
-def get_start_nodes_for_activation_path_tracing(nncf_graph: NNCFGraph) -> List[NNCFNode]:
+def get_start_nodes_for_activation_path_tracing(nncf_graph: NNCFGraph) -> list[NNCFNode]:
     """
     Get a list of NNCFNodes to use as start nodes for activation path tracing.
 
     :param nncf_graph: NNCFGraph to work with.
     :return: Target NNCFGraph input nodes.
     """
-    return nncf_graph.get_input_nodes() + nncf_graph.get_nodes_by_metatypes([OVReadValueMetatype])
+    return (
+        nncf_graph.get_input_nodes()
+        + nncf_graph.get_nodes_by_metatypes([OVReadValueMetatype])
+        + nncf_graph.get_nodes_by_metatypes(
+            DEFAULT_OV_QUANT_TRAIT_TO_OP_DICT[QuantizationTrait.OUTPUT_QUANTIZATION_AS_WEIGHTS]
+        )
+    )
 
 
 def remove_friendly_name_duplicates(model: ov.Model) -> ov.Model:
@@ -95,7 +102,7 @@ def model_has_state(model: ov.Model) -> bool:
     return len(model.get_sinks()) > 0
 
 
-def copy_rt_info(model_source: ov.Model, model_dest: ov.Model, path: List[str]) -> None:
+def copy_rt_info(model_source: ov.Model, model_dest: ov.Model, path: list[str]) -> None:
     """
     Checks and copies the rt_info from the source to destination model.
 

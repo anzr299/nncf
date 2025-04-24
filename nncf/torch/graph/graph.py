@@ -9,26 +9,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List, Tuple
+from itertools import chain
 
 import nncf
+from nncf.common.check_features import is_torch_tracing_by_patching
 from nncf.common.graph import NNCFGraph
 from nncf.common.graph import NNCFNode
 from nncf.common.graph import NNCFNodeName
 from nncf.common.graph.layer_attributes import MultipleInputLayerAttributes
 from nncf.torch.dynamic_graph.scope import Scope
+from nncf.torch.function_hook.graph.graph_utils import TensorMeta
+from nncf.torch.function_hook.nncf_graph.layer_attributes import PT2OpLayerAttributes
 from nncf.torch.graph.transformations.commands import PTTargetPoint
 
 
 class PTNNCFGraph(NNCFGraph):
-    def get_output_shapes_for_node(self, node_name: NNCFNodeName) -> List[Tuple]:
+    def get_output_shapes_for_node(self, node_name: NNCFNodeName) -> list[tuple]:
         node = self.get_node_by_name(node_name)
         node_key = self.get_node_key_by_id(node.node_id)
         succs = list(self._nx_graph.successors(node_key))
         edge_list = [self._nx_graph.edges[node_key, to_node_key] for to_node_key in succs]
         return [edge[NNCFGraph.ACTIVATION_SHAPE_EDGE_ATTR] for edge in edge_list]
 
-    def get_input_shapes_for_node(self, node_name: NNCFNodeName) -> Dict[int, Tuple]:
+    def get_input_shapes_for_node(self, node_name: NNCFNodeName) -> dict[int, tuple]:
         node = self.get_node_by_name(node_name)
         node_key = self.get_node_key_by_id(node.node_id)
         in_edges = list(self._nx_graph.in_edges(node_key))
@@ -43,7 +46,7 @@ class PTNNCFGraph(NNCFGraph):
                 retval[p] = edge_attr_dict[NNCFGraph.ACTIVATION_SHAPE_EDGE_ATTR]
         return retval
 
-    def get_input_shape_for_insertion_point(self, insertion_point: PTTargetPoint) -> Tuple[int]:
+    def get_input_shape_for_insertion_point(self, insertion_point: PTTargetPoint) -> tuple[int]:
         target_node_name = insertion_point.target_node_name
         if insertion_point.input_port_id is not None:
             quantizer_input_shape = self.get_input_shapes_for_node(target_node_name)[insertion_point.input_port_id]
@@ -52,7 +55,7 @@ class PTNNCFGraph(NNCFGraph):
             quantizer_input_shape = self.get_output_shapes_for_node(target_node_name)[0]
         return quantizer_input_shape
 
-    def get_op_nodes_in_scope(self, scope: Scope) -> List[NNCFNode]:
+    def get_op_nodes_in_scope(self, scope: Scope) -> list[NNCFNode]:
         """
         Returns all NNCFNodes inside the given scope.
 
@@ -66,7 +69,7 @@ class PTNNCFGraph(NNCFGraph):
                 matching_graph_op_nodes.extend(nodes_in_module)
         return matching_graph_op_nodes
 
-    def get_op_nodes_with_scope(self, scope: Scope) -> List[NNCFNode]:
+    def get_op_nodes_with_scope(self, scope: Scope) -> list[NNCFNode]:
         """
         Returns all NNCFNodes which share the given scope.
 
@@ -93,7 +96,7 @@ class PTNNCFGraph(NNCFGraph):
             raise nncf.InternalError(msg)
         return matches[0]
 
-    def get_nodes_with_missed_input_edges(self) -> List[NNCFNode]:
+    def get_nodes_with_missed_input_edges(self) -> list[NNCFNode]:
         """
         Returns a list of NNCFNodes that have at least one expected input edge missed.
         Requires MultipleInputLayerAttributes for nodes with several inputs and
@@ -102,16 +105,34 @@ class PTNNCFGraph(NNCFGraph):
         :return: List of NNCFNodes that are identified as disconnected.
         """
         input_nodes = set()
-        for node in self.get_all_nodes():
-            num_expected_input_edges = None
-            if hasattr(node.metatype, "num_expected_input_edges"):
-                num_expected_input_edges = node.metatype.num_expected_input_edges
-            if node.layer_attributes is not None and isinstance(node.layer_attributes, MultipleInputLayerAttributes):
-                num_expected_input_edges = node.layer_attributes.num_inputs
-            if num_expected_input_edges:
-                input_edges = self.get_input_edges(node)
-                if len(input_edges) < num_expected_input_edges:
-                    # If node has missed input edges we assume this node is an input node
-                    # that was disconnected from an activation input.
+        if is_torch_tracing_by_patching():
+            for node in self.get_all_nodes():
+                num_expected_input_edges = None
+                if hasattr(node.metatype, "num_expected_input_edges"):
+                    num_expected_input_edges = node.metatype.num_expected_input_edges
+                if node.layer_attributes is not None and isinstance(
+                    node.layer_attributes, MultipleInputLayerAttributes
+                ):
+                    num_expected_input_edges = node.layer_attributes.num_inputs
+                if num_expected_input_edges:
+                    input_edges = self.get_input_edges(node)
+                    if len(input_edges) < num_expected_input_edges:
+                        # If node has missed input edges we assume this node is an input node
+                        # that was disconnected from an activation input.
+                        input_nodes.add(node)
+        else:
+            # Check expected number of input edges by counting TensorMeta in op_args and op_kwargs.
+            for node in self.get_all_nodes():
+                input_edges = len(self.get_input_edges(node))
+                if not isinstance(node.layer_attributes, PT2OpLayerAttributes):
+                    continue
+                num_expected_input_edges = 0
+                for val in chain(node.layer_attributes.op_args, node.layer_attributes.op_kwargs.values()):
+                    if isinstance(val, TensorMeta):
+                        num_expected_input_edges += 1
+                    if isinstance(val, (list, tuple)):
+                        num_expected_input_edges += sum(isinstance(v, TensorMeta) for v in val)
+                if input_edges < num_expected_input_edges:
                     input_nodes.add(node)
+
         return list(input_nodes)

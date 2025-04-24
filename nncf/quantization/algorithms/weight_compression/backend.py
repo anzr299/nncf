@@ -11,7 +11,7 @@
 
 from abc import ABC
 from abc import abstractmethod
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, TypeVar
+from typing import Callable, Iterable, Optional, TypeVar
 
 from nncf.common.graph import NNCFGraph
 from nncf.common.graph import NNCFNode
@@ -24,7 +24,10 @@ from nncf.experimental.common.tensor_statistics.collectors import HAWQAggregator
 from nncf.experimental.common.tensor_statistics.collectors import RawReducer
 from nncf.experimental.common.tensor_statistics.collectors import TensorCollector
 from nncf.experimental.common.tensor_statistics.statistics import HessianTensorStatistic
+from nncf.parameters import CompressionFormat
+from nncf.quantization.advanced_parameters import AdvancedCompressionParameters
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionParameters
+from nncf.quantization.algorithms.weight_compression.lora_correction import LoraCorrectionAlgorithm
 from nncf.tensor import Tensor
 from nncf.tensor import TensorDataType
 
@@ -34,21 +37,21 @@ TModel = TypeVar("TModel")
 class WeightCompressionAlgoBackend(ABC):
     @property
     @abstractmethod
-    def matmul_metatypes(self) -> List[OperatorMetatype]:
+    def matmul_metatypes(self) -> list[OperatorMetatype]:
         """
         Property for the backend-specific metatypes for matmul layers.
         """
 
     @property
     @abstractmethod
-    def convolution_metatypes(self) -> List[OperatorMetatype]:
+    def convolution_metatypes(self) -> list[OperatorMetatype]:
         """
         Property for the backend-specific metatypes for convolution layers.
         """
 
     @property
     @abstractmethod
-    def embedding_metatypes(self) -> List[OperatorMetatype]:
+    def embedding_metatypes(self) -> list[OperatorMetatype]:
         """
         Property for the backend-specific metatypes for embedding layers.
         """
@@ -66,7 +69,7 @@ class WeightCompressionAlgoBackend(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_reduction_axes(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> Optional[Tuple[int]]:
+    def get_reduction_axes(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> Optional[tuple[int]]:
         """
         Returns reduction axes without axes that corresponds to weight channels of the node with weight.
 
@@ -78,7 +81,7 @@ class WeightCompressionAlgoBackend(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_weight_names_and_port_ids(node: NNCFNode, graph: NNCFGraph) -> List[Tuple[str, int]]:
+    def get_weight_names_and_port_ids(node: NNCFNode, graph: NNCFGraph) -> list[tuple[str, int]]:
         """
         Returns a list of weight names and port ids for the given node.
 
@@ -115,7 +118,7 @@ class WeightCompressionAlgoBackend(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_weight_shape(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> Tuple:
+    def get_weight_shape(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> tuple:
         """
         Returns a weight shape associated with the given node on the given port id.
 
@@ -145,17 +148,25 @@ class WeightCompressionAlgoBackend(ABC):
         model: TModel,
         graph: NNCFGraph,
         weight_compression_parameters: Iterable[WeightCompressionParameters],
-        precomputed_scales: Dict[str, Tensor] = None,
-        precomputed_zero_points: Dict[str, Tensor] = None,
+        precomputed_scales: dict[str, Tensor] = None,
+        precomputed_zero_points: dict[str, Tensor] = None,
+        lora_correction_algo: Optional[LoraCorrectionAlgorithm] = None,
+        compression_format: CompressionFormat = CompressionFormat.DQ,
+        advanced_parameters: AdvancedCompressionParameters = AdvancedCompressionParameters(),
     ) -> TModel:
         """
         Applies weight compression transformations to the model.
 
         :param model: Model in which the weights will be compressed according to the weight compression description.
         :param graph: The graph associated with the model.
-        :param weight_compression_parameters: List of weight compression parameters.
-        :param precomputed_scales: Precomputed scales for weights compression.
-        :param precomputed_zero_points: Precomputed zero points for weights compression.
+        :param weight_compression_parameters: An iterable of weight compression parameters.
+        :param precomputed_scales: Precomputed scales for weight compression.
+        :param precomputed_zero_points: Precomputed zero points for weight compression.
+        :param lora_correction_algo: An optional algorithm to reduce quantization noise after weight compression by
+            using low-rank adapters. This algorithm not only overrides weights with their quantized counterparts but
+            also expands the model's execution graph following the Low-Rank Adaptation (LoRA) concept.
+        :param compression_format: The format in which the model is saved after weight compression.
+        :param compression_format_params: Describes advanced parameters of compression formats.
         :return: The transformed model.
         """
 
@@ -201,7 +212,7 @@ class WeightCompressionAlgoBackend(ABC):
 
     @abstractmethod
     def mean_statistic_collector(
-        self, reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        self, reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorStatisticCollectorBase:
         """
         Return mean statistic collector
@@ -224,7 +235,7 @@ class WeightCompressionAlgoBackend(ABC):
 
     @staticmethod
     def dump_parameters(
-        model: TModel, parameters: Dict, algo_name: Optional[str] = "quantization", path: Optional[List] = None
+        model: TModel, parameters: dict, algo_name: Optional[str] = "quantization", path: Optional[list] = None
     ) -> None:
         """
         Dumps the given parameters into Model's meta section.
@@ -249,7 +260,7 @@ class WeightCompressionAlgoBackend(ABC):
 
 class AWQAlgoBackend(WeightCompressionAlgoBackend):
     @staticmethod
-    def get_awq_patterns() -> Dict:
+    def get_awq_patterns() -> dict:
         """
         Returns patterns of nodes in network graph for applying AWQ algorithm.
         """
@@ -273,20 +284,20 @@ class MixedPrecisionAlgoBackend(ABC):
     @staticmethod
     @abstractmethod
     def mean_variance_statistic_collector(
-        reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorCollector:
         pass
 
     @staticmethod
     @abstractmethod
     def max_variance_statistic_collector(
-        reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorCollector:
         pass
 
     @staticmethod
     @abstractmethod
     def mean_abs_max_statistic_collector(
-        reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorCollector:
         pass

@@ -11,7 +11,7 @@
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Dict, List, Optional, TypeVar
+from typing import Optional, TypeVar
 
 import nncf
 from nncf import nncf_logger
@@ -85,7 +85,7 @@ class AWQ(Algorithm):
         self._scale_per_target_node = {}
 
     @property
-    def available_backends(self) -> List[BackendType]:
+    def available_backends(self) -> list[BackendType]:
         return [BackendType.OPENVINO, BackendType.TORCH]
 
     def _set_backend_entity(
@@ -116,9 +116,9 @@ class AWQ(Algorithm):
         self,
         model: TModel,
         graph: NNCFGraph,
-        all_weight_params: List[WeightCompressionParameters],
-        nodes_to_compress: List[NNCFNode],
-        statistics: Dict[str, WCTensorStatistic],
+        all_weight_params: list[WeightCompressionParameters],
+        nodes_to_compress: list[NNCFNode],
+        statistics: dict[str, WCTensorStatistic],
         wc_backend_entity: Optional[WeightCompressionAlgoBackend] = None,
     ) -> TModel:
         """
@@ -136,7 +136,7 @@ class AWQ(Algorithm):
 
         inference_nncf_graph = transform_to_inference_graph(deepcopy(graph), [], [], [], [])
         nx_graph = inference_nncf_graph.get_nx_graph_copy()
-        for _, pattern_graph in self._patterns.items():
+        for pattern_graph in self._patterns.values():
             matches.extend(find_subgraphs_matching_pattern(nx_graph, pattern_graph(), strict=False))
 
         if len(matches) == 0:
@@ -201,6 +201,8 @@ class AWQ(Algorithm):
             config = wp.compression_config
 
             s, X = process_stats(statistics[k], self._subset_size)
+            s = s.astype(TensorDataType.float32)
+            X = X.astype(TensorDataType.float32)
 
             top_k = max(int(s.shape[0] * self._percent_to_apply), 1)
             topk_idxs = fns.argsort(-s)[:top_k]
@@ -218,6 +220,8 @@ class AWQ(Algorithm):
             weight = self._backend_entity.get_weight(
                 wp.node_with_weight, weight_port_id, model, graph
             )  # get_const_value(wp.weight_node)
+            weight_dtype = weight.dtype
+            weight = weight.astype(TensorDataType.float32)
             assert isinstance(wp.reduction_axes, tuple) and len(wp.reduction_axes) == 1
             reduction_axis = wp.reduction_axes[0]
 
@@ -279,7 +283,7 @@ class AWQ(Algorithm):
                 w_scale = fns.unsqueeze(w_scale, 0)
                 a_scale = fns.unsqueeze(1.0 / a_scale, 1)
 
-            scaled_weight = weight * w_scale
+            scaled_weight = (weight * w_scale).astype(weight_dtype)
             self._backend_entity.set_weight(wp.node_with_weight, weight_port_id, model, graph, scaled_weight)
 
             if self._backend_entity.is_node_with_weights(
@@ -287,11 +291,11 @@ class AWQ(Algorithm):
             ):  # for MatMul->Multiply->MatMul pattern scale merged to first MatMul
                 for _, port_id in self._backend_entity.get_weight_names_and_port_ids(merge_node, graph):
                     merge_weight = self._backend_entity.get_weight(merge_node, port_id, model, graph)
-                    merge_weight = merge_weight * a_scale
+                    merge_weight = (merge_weight * a_scale).astype(weight_dtype)
                     self._backend_entity.set_weight(merge_node, port_id, model, graph, merge_weight)
                 a_scale = fns.transpose(a_scale)
             else:  # for Act->Multiply->MatMul and Act->MatMul patterns scale inserted after Act as extra node
-                a_scale = fns.transpose(a_scale)
+                a_scale = fns.transpose(a_scale).astype(weight_dtype)
                 next_nodes = graph.get_next_nodes(merge_node)
                 source_node_output_port = graph.get_output_edges(merge_node)[0].output_port_id
                 scale_insertion_command = self._backend_entity.scale_insertion_command(

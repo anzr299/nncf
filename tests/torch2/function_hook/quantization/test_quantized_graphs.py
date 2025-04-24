@@ -17,8 +17,8 @@ import torch
 from networkx.drawing.nx_pydot import to_pydot
 
 import nncf
-from nncf.experimental.torch2.function_hook.nncf_graph.nncf_graph_builder import build_nncf_graph
 from nncf.parameters import ModelType
+from nncf.torch.function_hook.nncf_graph.nncf_graph_builder import build_nncf_graph
 from tests.cross_fw.shared.paths import TEST_ROOT
 from tests.cross_fw.test_templates.helpers import EmbeddingModel
 from tests.cross_fw.test_templates.helpers import RoPEModel
@@ -85,10 +85,7 @@ def test_quantized_graphs(desc: ModelDesc, quantization_parameters: Dict[str, An
 
     q_model = nncf.quantize(model, nncf.Dataset([example_input]), **quantization_parameters)
 
-    if isinstance(example_input, dict):
-        nncf_graph = build_nncf_graph(q_model, **example_input)
-    else:
-        nncf_graph = build_nncf_graph(q_model, example_input)
+    nncf_graph = build_nncf_graph(q_model, example_input)
     nx_graph = to_comparable_nx_graph(nncf_graph)
     dot_nncf_graph = to_pydot(nx_graph)
     ref_file = REF_DIR / f"{desc.model_name}.dot"

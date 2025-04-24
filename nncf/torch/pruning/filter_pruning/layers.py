@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import torch
@@ -18,11 +18,11 @@ from torch import nn
 import nncf
 from nncf.common.graph import NNCFNodeName
 from nncf.torch.layer_utils import COMPRESSION_MODULES
-from nncf.torch.layer_utils import StatefullModuleInterface
+from nncf.torch.layer_utils import StatefulModuleInterface
 
 
 @COMPRESSION_MODULES.register()
-class FilterPruningMask(nn.Module, StatefullModuleInterface):
+class FilterPruningMask(nn.Module, StatefulModuleInterface):
     """
     A module contains the mask for pruning.
     On forward pass applying the mask to weight and bias of the module.
@@ -64,7 +64,7 @@ class FilterPruningMask(nn.Module, StatefullModuleInterface):
             )
         return new_params
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {
             self.MASK_APPLYING_DIM_KEY: self.mask_applying_dim,
             self.NODE_NAME_KEY: self.node_name,
@@ -72,7 +72,7 @@ class FilterPruningMask(nn.Module, StatefullModuleInterface):
         }
 
     @classmethod
-    def from_config(cls, state: Dict[str, Any]) -> "FilterPruningMask":
+    def from_config(cls, state: dict[str, Any]) -> "FilterPruningMask":
         return FilterPruningMask(
             size=state[cls.SIZE_KEY], node_name=state[cls.NODE_NAME_KEY], dim=state[cls.MASK_APPLYING_DIM_KEY]
         )

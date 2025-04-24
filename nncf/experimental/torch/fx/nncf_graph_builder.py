@@ -10,7 +10,6 @@
 # limitations under the License.
 
 from collections import Counter
-from typing import Tuple
 
 import torch.fx
 
@@ -31,6 +30,8 @@ class GraphConverter:
     """
     Builds the NNCFGraph from an torch.fx.GraphModule instance.
     """
+
+    TORCH_SYMBOLIC_TYPES = (torch.SymInt, torch.SymFloat, torch.SymBool)
 
     def _get_layer_attributes(
         node: torch.fx.Node, metatype: om.OperatorMetatype, model: torch.fx.GraphModule
@@ -82,7 +83,7 @@ class GraphConverter:
         return metatype
 
     @staticmethod
-    def get_node_type_and_metatype(node: torch.fx.Node, model: torch.fx.GraphModule) -> Tuple[str, om.OperatorMetatype]:
+    def get_node_type_and_metatype(node: torch.fx.Node, model: torch.fx.GraphModule) -> tuple[str, om.OperatorMetatype]:
         """
         Retrieves node's type and metatype.
 
@@ -168,7 +169,7 @@ class GraphConverter:
         source_nncf_node: NNCFNode,
         dist_node: torch.fx.Node,
         output_idx: int,
-    ) -> Tuple[int, int, Tuple[int, ...]]:
+    ) -> tuple[int, int, tuple[int, ...]]:
         """
         Retrieves edge params from the given source_node and dist_node pair.
 
@@ -196,7 +197,9 @@ class GraphConverter:
             else:
                 tensor = source_node.meta["val"]
             if isinstance(tensor, torch.Tensor):
-                tensor_shape = tuple(tensor.shape)
+                tensor_shape = tuple(-1 if isinstance(i, torch.SymInt) else i for i in tensor.shape)
+            elif isinstance(tensor, GraphConverter.TORCH_SYMBOLIC_TYPES):
+                tensor_shape = (-1,)
 
         if tensor_shape is None:
             # TODO(dlyakhov): Refactor algorithms to always have knowns edges shapes.

@@ -19,7 +19,7 @@ from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import nncf
-from nncf.experimental.torch2.function_hook.wrapper import wrap_model
+from nncf.torch.function_hook.wrapper import wrap_model
 from tests.torch2.function_hook.helpers import ConvModel
 from tests.torch2.function_hook.helpers import get_wrapped_simple_model_with_hook
 
@@ -70,7 +70,7 @@ def test_train_data_parallel_with_overridden_forward():
     # In overridden bound method __self__ links to original model for all replicas
     optimizer = torch.optim.Adam(wrapped_model.parameters(), lr=0.1)
     parallel_model = torch.nn.DataParallel(wrapped_model)
-    with pytest.raises(nncf.InternalError, match="Not supported overwriting forward method, expected ForwardWithHooks"):
+    with pytest.raises(nncf.InternalError, match="Not supported overridden forward"):
         run_one_epoch(parallel_model, optimizer, use_cuda=True)
 
 
@@ -87,7 +87,7 @@ def test_train_data_parallel_with_overridden_forward_after_wrap_model():
     wrapped_model.forward = patched_forward
     optimizer = torch.optim.Adam(wrapped_model.parameters(), lr=0.1)
     parallel_model = torch.nn.DataParallel(wrapped_model)
-    with pytest.raises(nncf.InternalError, match="Not supported overwriting forward method of original module"):
+    with pytest.raises(nncf.InternalError, match="Not supported overridden forward"):
         run_one_epoch(parallel_model, optimizer, use_cuda=True)
 
 

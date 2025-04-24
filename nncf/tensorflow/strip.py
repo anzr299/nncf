@@ -9,11 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict
 
 import tensorflow as tf
 
+import nncf
 from nncf.common.utils.backend import copy_model
+from nncf.parameters import StripFormat
 from nncf.tensorflow.graph.model_transformer import TFModelTransformer
 from nncf.tensorflow.graph.transformations.commands import TFOperationWithWeights
 from nncf.tensorflow.graph.transformations.commands import TFRemovalCommand
@@ -28,15 +29,21 @@ from nncf.tensorflow.sparsity.rb.operation import RBSparsifyingWeight
 from nncf.tensorflow.sparsity.utils import apply_mask
 
 
-def strip(model: tf.keras.Model, do_copy: bool = True) -> tf.keras.Model:
+def strip(
+    model: tf.keras.Model, do_copy: bool = True, strip_format: StripFormat = StripFormat.NATIVE
+) -> tf.keras.Model:
     """
     Implementation of the nncf.strip() function for the TF backend
 
     :param model: The compressed model.
     :param do_copy: If True (default), will return a copy of the currently associated model object. If False,
       will return the currently associated model object "stripped" in-place.
+    :param strip format: Describes the format in which model is saved after strip.
     :return: The stripped model.
     """
+    if strip_format != StripFormat.NATIVE:
+        msg = f"Tensorflow does not support for {strip_format} strip format."
+        raise nncf.UnsupportedBackendError(msg)
     if not isinstance(model, tf.keras.Model):
         return model
 
@@ -49,7 +56,7 @@ def strip(model: tf.keras.Model, do_copy: bool = True) -> tf.keras.Model:
         model = copy_model(model)
         wrapped_layers = collect_wrapped_layers(model)
 
-    op_to_priority: Dict[NNCFOperation, int] = {
+    op_to_priority: dict[NNCFOperation, int] = {
         SymmetricQuantizer: 1,
         AsymmetricQuantizer: 1,
         BinaryMask: 2,

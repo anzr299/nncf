@@ -9,11 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import numpy as np
 import pytest
 import torch
+from torch import nn
 from torch.quantization.fake_quantize import FakeQuantize
 
 import nncf
@@ -23,10 +24,15 @@ from nncf.common.quantization.quantizers import get_num_levels
 from nncf.common.quantization.structs import QuantizationScheme as QuantizationMode
 from nncf.config import NNCFConfig
 from nncf.torch.graph.transformations.commands import ExtraCompressionModuleType
+from nncf.torch.quantization.layers import AsymmetricLoraQuantizer
 from nncf.torch.quantization.layers import AsymmetricQuantizer
+from nncf.torch.quantization.layers import PTLoraSpec
 from nncf.torch.quantization.layers import PTQuantizerSpec
+from nncf.torch.quantization.layers import SymmetricLoraQuantizer
 from nncf.torch.quantization.layers import SymmetricQuantizer
+from nncf.torch.quantization.strip import asym_fq_to_decompressor
 from nncf.torch.quantization.strip import convert_to_torch_fakequantizer
+from nncf.torch.quantization.strip import sym_fq_to_decompressor
 from tests.common.quantization.data_generators import check_outputs
 from tests.common.quantization.data_generators import generate_lazy_sweep_data
 from tests.common.quantization.data_generators import generate_random_low_and_range_by_input_size
@@ -325,3 +331,183 @@ def test_nncf_strip_api(strip_type, do_copy):
 
     assert isinstance(strip_model.conv.get_pre_op("0").op, FakeQuantize)
     assert isinstance(strip_model.nncf.external_quantizers["/nncf_model_input_0|OUTPUT"], FakeQuantize)
+
+
+def check_compression_modules(
+    model_: nn.Module,
+    expected_module_type: ExtraCompressionModuleType,
+    not_expected_module_type: ExtraCompressionModuleType,
+    expected_class: Any,
+) -> None:
+    """
+    Checks if the given model has the expected compression module registered and not the unexpected one.
+    Also verifies that the compression module is of the expected class type.
+
+    :param model_: The model to be checked, which should have an 'nncf' attribute with compression module methods.
+    :param expected_module_type: The type of the compression module that is expected to be registered.
+    :param not_expected_module_type: The type of the compression module that is not expected to be registered.
+    :param expected_class: The class type that the expected compression module should be an instance of.
+    """
+    assert model_.nncf.is_compression_module_registered(expected_module_type)
+    assert not model_.nncf.is_compression_module_registered(not_expected_module_type)
+    compression_modules_dict = model_.nncf.get_compression_modules_by_type(expected_module_type)
+    assert len(compression_modules_dict) == 1
+    compression_module = next(iter(compression_modules_dict.values()))
+    assert isinstance(compression_module, expected_class)
+
+
+SIGNED_WEIGHT_SAMPLE = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75]
+SCALE_SAMPLE = [2.0]
+
+
+@pytest.mark.parametrize(
+    ("num_bits", "ref_scale", "torch_dtype"),
+    (
+        (4, [0.25], torch.float32),
+        (8, [0.01563], torch.float32),
+        (4, [0.25], torch.float16),
+        (8, [0.01563], torch.float16),
+        (4, [0.25], torch.bfloat16),
+        (8, [0.01563], torch.bfloat16),
+    ),
+    ids=[
+        "4bit_float32",
+        "8bit_float32",
+        "4bit_float16",
+        "8bit_float16",
+        "4bit_bfloat16",
+        "8bit_bfloat16",
+    ],
+)
+def test_sym_fq_to_decompressor(num_bits, ref_scale, torch_dtype):
+    weights_shape = (1, len(SIGNED_WEIGHT_SAMPLE))
+    weight = torch.tensor(SIGNED_WEIGHT_SAMPLE)
+    weight = weight.expand(weights_shape).to(torch_dtype)
+
+    scale_shape = (1, 1)
+    scale = torch.tensor(SCALE_SAMPLE)
+    scale = scale.expand(scale_shape).to(torch.float16)
+
+    # reference scale calculates with this formula:
+    # levels = (2 ** num_bits)
+    # level_low = -(levels // 2)
+    # ref_scale = SCALE_SAMPLE / abs(level_low)
+    ref_scale = torch.tensor(ref_scale)
+    ref_scale = ref_scale.expand(scale_shape).to(torch.float16)
+
+    qspec = PTQuantizerSpec(
+        num_bits=num_bits,
+        mode=QuantizationMode.SYMMETRIC,
+        signedness_to_force=True,
+        narrow_range=False,
+        scale_shape=scale.shape,
+        logarithm_scale=False,
+        half_range=False,
+        is_quantized_on_export=True,
+    )
+    lspec = PTLoraSpec(
+        lora_rank=1,
+        orig_weight_shape=weight.shape,
+        weight_shape=weight.shape,
+    )
+
+    quantizer = SymmetricLoraQuantizer(qspec, lspec)
+    quantizer.scale.data = scale
+
+    with torch.no_grad():
+        decompressor, q_weight = sym_fq_to_decompressor(
+            quantizer,
+            weight,
+        )
+        fq_weight = quantizer(weight)
+    packed_tensor = decompressor.pack_weight(q_weight)
+    qdq_weight = decompressor(packed_tensor)
+
+    assert torch.allclose(fq_weight, qdq_weight)
+    assert torch.allclose(qdq_weight, weight)
+    assert torch.allclose(decompressor._scale, ref_scale)
+
+
+UNSIGNED_WEIGHT_SAMPLE = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+INPUT_LOW_SAMPLE = [0.0]
+INPUT_RANGE_SAMPLE = [0.5]
+
+
+@pytest.mark.parametrize(
+    ("num_bits", "ref_scale", "ref_zero_point", "torch_dtype", "atol"),
+    (
+        (4, 0.03333, 0.0, torch.float32, 1e-3),
+        (8, 0.00196, 0.0, torch.float32, 1e-4),
+        (4, 0.03333, 0.0, torch.float16, 1e-3),
+        (8, 0.00196, 0.0, torch.float16, 1e-8),
+        (4, 0.03333, 0.0, torch.bfloat16, 1e-8),
+        (8, 0.00196, 0.0, torch.bfloat16, 1e-8),
+    ),
+    ids=[
+        "4bit_float32",
+        "8bit_float32",
+        "4bit_float16",
+        "8bit_float16",
+        "4bit_bfloat16",
+        "8bit_bfloat16",
+    ],
+)
+def test_asym_fq_to_decompressor(num_bits, ref_scale, ref_zero_point, torch_dtype, atol):
+    weights_shape = (1, len(UNSIGNED_WEIGHT_SAMPLE))
+    weight = torch.tensor(UNSIGNED_WEIGHT_SAMPLE)
+    weight = weight.expand(weights_shape).to(torch_dtype)
+
+    scale_shape = weights_shape
+    # reference scale calculates with this formula:
+    # levels = (2 ** num_bits)
+    # level_high = levels - 1
+    # ref_scale = INPUT_RANGE_SAMPLE / level_high
+    ref_scale = torch.tensor(ref_scale)
+    ref_scale = ref_scale.expand(scale_shape).to(torch.float16)
+
+    # reference zero point calculates with this formula:
+    # level_low = 0
+    # ref_zero_point = level_low - round(INPUT_LOW_SAMPLE / ref_scale)
+    ref_zero_point = torch.tensor(ref_zero_point)
+    ref_zero_point = ref_zero_point.expand(scale_shape).to(torch.uint8)
+
+    input_low = torch.tensor(INPUT_LOW_SAMPLE)
+    input_low = input_low.expand(scale_shape).to(torch_dtype)
+
+    input_range = torch.tensor(INPUT_RANGE_SAMPLE)
+    input_range = input_range.expand(scale_shape).to(torch_dtype)
+
+    qspec = PTQuantizerSpec(
+        num_bits=num_bits,
+        mode=QuantizationMode.ASYMMETRIC,
+        signedness_to_force=False,
+        narrow_range=False,
+        scale_shape=scale_shape,
+        logarithm_scale=False,
+        half_range=False,
+        is_quantized_on_export=True,
+    )
+    lspec = PTLoraSpec(
+        lora_rank=1,
+        orig_weight_shape=weight.shape,
+        weight_shape=weight.shape,
+    )
+
+    quantizer = AsymmetricLoraQuantizer(qspec, lspec)
+    quantizer.input_low.data = input_low
+    quantizer.input_range.data = input_range
+
+    with torch.no_grad():
+        decompressor, q_weight = asym_fq_to_decompressor(
+            quantizer,
+            weight,
+        )
+        fq_weight = quantizer(weight)
+    packed_tensor = decompressor.pack_weight(q_weight)
+    ref_zero_point = decompressor.pack_weight(ref_zero_point)
+    qdq_weight = decompressor(packed_tensor)
+
+    assert torch.allclose(fq_weight, qdq_weight, atol=atol)
+    assert torch.allclose(qdq_weight, weight, atol=atol)
+    assert torch.allclose(decompressor._zero_point, ref_zero_point)
+    assert torch.allclose(decompressor._scale, ref_scale)

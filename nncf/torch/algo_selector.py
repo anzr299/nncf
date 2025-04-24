@@ -8,7 +8,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Dict
 
 import torch
 
@@ -19,6 +18,7 @@ from nncf.common.schedulers import StubCompressionScheduler
 from nncf.common.statistics import NNCFStatistics
 from nncf.common.utils.backend import copy_model
 from nncf.common.utils.registry import Registry
+from nncf.parameters import StripFormat
 from nncf.torch.compression_method_api import PTCompressionAlgorithmBuilder
 from nncf.torch.compression_method_api import PTCompressionAlgorithmController
 from nncf.torch.compression_method_api import PTCompressionLoss
@@ -43,7 +43,7 @@ class NoCompressionAlgorithmBuilder(PTCompressionAlgorithmBuilder):
     def _get_transformation_layout(self, target_model: NNCFNetwork) -> PTTransformationLayout:
         return PTTransformationLayout()
 
-    def _get_algo_specific_config_section(self) -> Dict:
+    def _get_algo_specific_config_section(self) -> dict:
         return {}
 
     def _build_controller(self, model: NNCFNetwork) -> PTCompressionAlgorithmController:
@@ -81,7 +81,7 @@ class NoCompressionAlgorithmController(PTCompressionAlgorithmController):
     def statistics(self, quickly_collected_only: bool = False) -> NNCFStatistics:
         return NNCFStatistics()
 
-    def strip(self, do_copy: bool = True) -> NNCFNetwork:
+    def strip(self, do_copy: bool = True, strip_format: StripFormat = StripFormat.NATIVE) -> NNCFNetwork:
         model = self.model
         if do_copy:
             model = copy_model(self.model)

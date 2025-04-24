@@ -10,7 +10,7 @@
 # limitations under the License.
 
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Optional, Union
 
 import torch.fx
 from torch.ao.quantization.observer import HistogramObserver
@@ -38,7 +38,6 @@ from nncf.common.quantization.structs import QuantizationScheme
 from nncf.common.utils.api_marker import api
 from nncf.experimental.torch.fx.nncf_graph_builder import GraphConverter
 from nncf.experimental.torch.fx.node_utils import get_graph_node_by_name
-from nncf.experimental.torch.fx.transformations import fold_constant_except_qdq
 from nncf.quantization.advanced_parameters import FP8QuantizationParameters
 from nncf.quantization.advanced_parameters import QuantizationParameters
 from nncf.quantization.algorithms.min_max.algorithm import MinMaxQuantization
@@ -107,10 +106,10 @@ class OpenVINOQuantizer(TorchAOQuantizer):
 
     def set_ignored_scope(
         self,
-        names: Optional[List[str]] = None,
-        patterns: Optional[List[str]] = None,
-        types: Optional[List[str]] = None,
-        subgraphs: Optional[List[Tuple[List[str], List[str]]]] = None,
+        names: Optional[list[str]] = None,
+        patterns: Optional[list[str]] = None,
+        types: Optional[list[str]] = None,
+        subgraphs: Optional[list[tuple[list[str], list[str]]]] = None,
         validate: bool = True,
     ) -> None:
         """
@@ -195,7 +194,7 @@ class OpenVINOQuantizer(TorchAOQuantizer):
 
     @staticmethod
     def _get_unified_scales_root_quantizer_id(
-        nncf_graph: NNCFGraph, quantizer_ids: List[int], quantizer_setup: SingleConfigQuantizerSetup
+        nncf_graph: NNCFGraph, quantizer_ids: list[int], quantizer_setup: SingleConfigQuantizerSetup
     ) -> int:
         """
         Identifies the earliest quantizer node ID based on the corresponding `nncf_node.node_id`
@@ -222,8 +221,8 @@ class OpenVINOQuantizer(TorchAOQuantizer):
         graph: torch.fx.Graph,
         nncf_graph: NNCFGraph,
         qp: QuantizationPointBase,
-        node_vs_torch_annotation: Dict[torch.fx.Node, TorchAOQuantizationAnnotation],
-    ) -> Tuple[EdgeOrNode, TorchAOQuantizationAnnotation]:
+        node_vs_torch_annotation: dict[torch.fx.Node, TorchAOQuantizationAnnotation],
+    ) -> tuple[EdgeOrNode, TorchAOQuantizationAnnotation]:
         """
         Retrieves the edge or node and its corresponding TorchAOQuantizationAnnotation based on the given graph,
         quantization point, and node-to-annotation mapping.
@@ -361,5 +360,4 @@ class OpenVINOQuantizer(TorchAOQuantizer):
         :param model: Given torch.fx.GraphModule to transform before the annotation.
         :return: The transformed torch.fx.GraphModule ready for the annotation.
         """
-        fold_constant_except_qdq(model)
         return model

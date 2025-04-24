@@ -8,10 +8,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Iterable, Optional
 
 import openvino as ov
-from openvino.runtime import opset13 as opset
+from openvino import opset13 as opset
 
 import nncf
 from nncf.common.graph import NNCFGraph
@@ -46,13 +46,16 @@ from nncf.openvino.statistics.collectors import OVMeanAbsMaxReducer
 from nncf.openvino.statistics.collectors import OVMeanReducer
 from nncf.openvino.statistics.collectors import OVMeanVarianceReducer
 from nncf.openvino.statistics.collectors import OVShapeReducer
+from nncf.parameters import CompressionFormat
 from nncf.parameters import CompressWeightsMode
+from nncf.quantization.advanced_parameters import AdvancedCompressionParameters
 from nncf.quantization.algorithms.weight_compression.awq_patterns import get_awq_patterns
 from nncf.quantization.algorithms.weight_compression.backend import AWQAlgoBackend
 from nncf.quantization.algorithms.weight_compression.backend import MixedPrecisionAlgoBackend
 from nncf.quantization.algorithms.weight_compression.backend import WeightCompressionAlgoBackend
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionParameters
+from nncf.quantization.algorithms.weight_compression.handle_errors import handle_invalid_group_size_error
 from nncf.quantization.algorithms.weight_compression.lora_correction import LoraCorrectionAlgorithm
 from nncf.quantization.algorithms.weight_compression.weight_lowering import compress_weight
 from nncf.tensor import Tensor
@@ -61,18 +64,18 @@ from nncf.tensor.functions.openvino_numeric import DTYPE_MAP_REV
 
 
 class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
-    def __init__(self, model: ov.Model, name_to_node_mapping: Dict = None):
+    def __init__(self, model: ov.Model, name_to_node_mapping: dict = None):
         if name_to_node_mapping is None:
             self.name_to_node_mapping = OVModelTransformer._get_name_to_node_mapping(model)
         else:
             self.name_to_node_mapping = name_to_node_mapping
 
     @property
-    def matmul_metatypes(self) -> List[OperatorMetatype]:
+    def matmul_metatypes(self) -> list[OperatorMetatype]:
         return [om.OVMatMulMetatype]
 
     @property
-    def convolution_metatypes(self) -> List[OperatorMetatype]:
+    def convolution_metatypes(self) -> list[OperatorMetatype]:
         return [
             om.OVConvolutionMetatype,
             om.OVDepthwiseConvolutionMetatype,
@@ -82,7 +85,7 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         ]
 
     @property
-    def embedding_metatypes(self) -> List[OperatorMetatype]:
+    def embedding_metatypes(self) -> list[OperatorMetatype]:
         return [om.OVEmbeddingMetatype]
 
     @staticmethod
@@ -90,7 +93,7 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         return node.layer_attributes and node.layer_attributes.constant_attributes
 
     @staticmethod
-    def get_reduction_axes(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> Optional[Tuple[int]]:
+    def get_reduction_axes(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> Optional[tuple[int]]:
         channel_axes = get_weight_channel_axes(node_with_weight)
         const_shape = node_with_weight.layer_attributes.constant_attributes[weight_port_id]["shape"]
         return get_reduction_axes(channel_axes, const_shape)
@@ -100,7 +103,7 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         return OVTargetPoint(target_type, target_node_name, port_id)
 
     def mean_statistic_collector(
-        self, reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        self, reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorCollector:
         mean_reducer = OVMeanReducer(reduction_axes, inplace=True)
         shape_reducer = OVShapeReducer(inplace=True)
@@ -122,7 +125,7 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         return activation_ports[0]
 
     @staticmethod
-    def get_weight_names_and_port_ids(node: NNCFNode, graph: NNCFGraph) -> List[Tuple[str, int]]:
+    def get_weight_names_and_port_ids(node: NNCFNode, graph: NNCFGraph) -> list[tuple[str, int]]:
         result = []
         for weight_port_id in node.layer_attributes.get_const_port_ids():
             weight_name = node.layer_attributes.constant_attributes[weight_port_id]["name"]
@@ -143,34 +146,25 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         return DTYPE_MAP_REV[ov_type]
 
     @staticmethod
-    def get_weight_shape(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> Tuple:
+    def get_weight_shape(node_with_weight: NNCFNode, weight_port_id: int, graph: NNCFGraph) -> tuple:
         return node_with_weight.layer_attributes.constant_attributes[weight_port_id]["shape"]
 
     def set_weight(
         self, node_with_weight: NNCFNode, weight_port_id: int, model: ov.Model, graph: NNCFGraph, weight: Tensor
     ):
-        node_with_const = self.name_to_node_mapping[node_with_weight.node_name]
+        const_op_friendly_name = node_with_weight.layer_attributes.constant_attributes[weight_port_id]["name"]
+        const_op = self.name_to_node_mapping[const_op_friendly_name]
 
-        const_port = node_with_const.input(weight_port_id)
-        const_node = node_with_const.input_value(weight_port_id).get_node()
+        dtype = const_op.get_element_type()
+        name = const_op.get_friendly_name()
+        new_const_op = create_ov_const_from_tensor(weight, dtype, name)
+        self.name_to_node_mapping[const_op_friendly_name] = new_const_op
 
-        shared_memory = True
-        if const_node.get_element_type() == ov.Type.bf16:
-            # Shared memory does not work for BF16 precision
-            shared_memory = False
-
-        new_const_node = ov.runtime.op.Constant(weight.data, shared_memory=shared_memory)
-        new_const_node.set_friendly_name(const_node.get_friendly_name())
-        const_port.replace_source_output(new_const_node.output(0))
-
-        const_name = node_with_weight.layer_attributes.constant_attributes[weight_port_id]["name"]
-        self.name_to_node_mapping[const_name] = new_const_node
-
-        new_output = new_const_node.output(0)
-        for target_input in const_node.output(0).get_target_inputs():
+        new_output = new_const_op.output(0)
+        for target_input in const_op.output(0).get_target_inputs():
             target_input.replace_source_output(new_output)
 
-        del const_node
+        del const_op
 
     def insert_adapters(
         self, wc_params: WeightCompressionParameters, lora_A: Tensor, lora_B: Tensor, int8_lora: bool
@@ -218,7 +212,7 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         self,
         weight: Tensor,
         compression_config: WeightCompressionConfig,
-        reduction_axes: Tuple[int, ...],
+        reduction_axes: tuple[int, ...],
         const_node_name: str,
         weight_port_id: int,
         const_dtype,
@@ -253,7 +247,6 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
                 layer_scales,
                 layer_zero_points,
             )
-
         compressed_const = create_ov_const_from_tensor(
             compressed_weight.tensor, compression_dtype, name=const_node_name
         )
@@ -289,10 +282,14 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         model: ov.Model,
         graph: NNCFGraph,
         weight_compression_parameters: Iterable[WeightCompressionParameters],
-        precomputed_scales: Dict[str, Tensor] = None,
-        precomputed_zero_points: Dict[str, Tensor] = None,
+        precomputed_scales: dict[str, Tensor] = None,
+        precomputed_zero_points: dict[str, Tensor] = None,
         lora_correction_algo: LoraCorrectionAlgorithm = None,
+        compression_format: CompressionFormat = CompressionFormat.DQ,
+        advanced_parameters: AdvancedCompressionParameters = AdvancedCompressionParameters(),
     ) -> ov.Model:
+        invalid_node_names = []
+        first_caught_error = None
         for wc_params in weight_compression_parameters:
             const_attributes = wc_params.node_with_weight.layer_attributes.constant_attributes[wc_params.weight_port_id]
             const_node_name = const_attributes["name"]
@@ -315,17 +312,22 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
             layer_zero_points = (
                 None if precomputed_zero_points is None else precomputed_zero_points.get(wc_params.weight_name)
             )
-            mul, compressed_weight = self._create_compression_subgraph(
-                weight=weight,
-                compression_config=wc_params.compression_config,
-                reduction_axes=wc_params.reduction_axes,
-                const_node_name=const_node_name,
-                weight_port_id=wc_params.weight_port_id,
-                const_dtype=const_dtype,
-                should_add_convert_node=should_add_convert_node,
-                layer_scales=layer_scales,
-                layer_zero_points=layer_zero_points,
-            )
+            try:
+                mul, compressed_weight = self._create_compression_subgraph(
+                    weight=weight,
+                    compression_config=wc_params.compression_config,
+                    reduction_axes=wc_params.reduction_axes,
+                    const_node_name=const_node_name,
+                    weight_port_id=wc_params.weight_port_id,
+                    const_dtype=const_dtype,
+                    should_add_convert_node=should_add_convert_node,
+                    layer_scales=layer_scales,
+                    layer_zero_points=layer_zero_points,
+                )
+            except nncf.InvalidGroupSizeError as error:
+                first_caught_error = error
+                invalid_node_names.append(wc_params.node_with_weight.node_name)
+                continue
 
             mul_output = mul.output(0)
             for target_input in const_node.output(0).get_target_inputs():
@@ -339,6 +341,8 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
                 adapters = lora_correction_algo.calculate_adapters(weight, compressed_weight, wc_params)
                 self.insert_adapters(wc_params, *adapters, int8_lora=lora_correction_algo.use_int8_adapters)
 
+        if first_caught_error:
+            handle_invalid_group_size_error(first_caught_error, invalid_node_names)
         # reset name_to_node_mapping
         self.name_to_node_mapping = None
 
@@ -348,7 +352,7 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
 
     @staticmethod
     def dump_parameters(
-        model: ov.Model, parameters: Dict, algo_name: Optional[str] = "quantization", path: Optional[List] = None
+        model: ov.Model, parameters: dict, algo_name: Optional[str] = "quantization", path: Optional[list] = None
     ) -> None:
         dump_parameters(model, parameters, algo_name, path)
 
@@ -392,7 +396,7 @@ class OVAWQAlgoAlgoBackend(AWQAlgoBackend, OVWeightCompressionAlgoBackend):
 class OVMixedPrecisionAlgoBackend(MixedPrecisionAlgoBackend, OVWeightCompressionAlgoBackend):
     @staticmethod
     def mean_variance_statistic_collector(
-        reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorCollector:
         reducer = OVMeanVarianceReducer(reduction_axes, inplace=True)
         aggregator = MeanAggregator(num_samples=subset_size)
@@ -402,7 +406,7 @@ class OVMixedPrecisionAlgoBackend(MixedPrecisionAlgoBackend, OVWeightCompression
 
     @staticmethod
     def max_variance_statistic_collector(
-        reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorCollector:
         reducer = OVMaxVarianceReducer(reduction_axes, inplace=True)
         aggregator = MeanAggregator(num_samples=subset_size)
@@ -412,7 +416,7 @@ class OVMixedPrecisionAlgoBackend(MixedPrecisionAlgoBackend, OVWeightCompression
 
     @staticmethod
     def mean_abs_max_statistic_collector(
-        reduction_axes: Tuple[int], subset_size: Optional[int] = None
+        reduction_axes: tuple[int], subset_size: Optional[int] = None
     ) -> TensorCollector:
         reducer = OVMeanAbsMaxReducer(reduction_axes, inplace=True)
         aggregator = MeanAggregator(num_samples=subset_size)

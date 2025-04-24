@@ -11,7 +11,7 @@
 
 from abc import ABC
 from abc import abstractmethod
-from typing import Any, Dict
+from typing import Any
 
 import torch
 from torch import nn
@@ -23,7 +23,7 @@ from nncf.common.utils.registry import Registry
 COMPRESSION_MODULES = Registry("compression modules")
 
 
-class StatefullModuleInterface(ABC):
+class StatefulModuleInterface(ABC):
     """
     Interface that should be implemented for every registered compression module to make it possible
     to save an compression modules state and create an compression module from the saved state.
@@ -38,14 +38,14 @@ class StatefullModuleInterface(ABC):
     """
 
     @abstractmethod
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         """
         Returns the compression module config.
         """
 
     @classmethod
     @abstractmethod
-    def from_config(cls, state: Dict[str, Any]) -> object:
+    def from_config(cls, state: dict[str, Any]) -> object:
         """
         Creates a compression module instance from the given config.
         """

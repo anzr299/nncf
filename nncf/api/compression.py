@@ -13,12 +13,13 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 from enum import IntEnum
-from typing import Any, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Optional, TypeVar
 
 from nncf.common.graph.transformations.layout import TransformationLayout
 from nncf.common.statistics import NNCFStatistics
 from nncf.common.utils.api_marker import api
 from nncf.common.utils.backend import copy_model
+from nncf.parameters import StripFormat
 
 TModel = TypeVar("TModel")
 
@@ -40,7 +41,7 @@ class CompressionLoss(ABC):
         """
 
     @abstractmethod
-    def load_state(self, state: Dict[str, Any]) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         """
         Loads the compression loss state.
 
@@ -49,7 +50,7 @@ class CompressionLoss(ABC):
         """
 
     @abstractmethod
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """
         Returns the compression loss state.
         """
@@ -103,7 +104,7 @@ class CompressionScheduler(ABC):
         """
 
     @abstractmethod
-    def load_state(self, state: Dict[str, Any]) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         """
         Loads the compression scheduler state, but does not update the state of the
         compression method.
@@ -112,7 +113,7 @@ class CompressionScheduler(ABC):
         """
 
     @abstractmethod
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """
         Returns the compression scheduler state.
         """
@@ -192,7 +193,7 @@ class CompressionAlgorithmController(ABC):
         """
 
     @abstractmethod
-    def load_state(self, state: Dict[str, Dict[str, Any]]) -> None:
+    def load_state(self, state: dict[str, dict[str, Any]]) -> None:
         """
         Loads the compression controller state from the map of algorithm name to the dictionary with state attributes.
 
@@ -200,14 +201,14 @@ class CompressionAlgorithmController(ABC):
         """
 
     @abstractmethod
-    def get_state(self) -> Dict[str, Dict[str, Any]]:
+    def get_state(self) -> dict[str, dict[str, Any]]:
         """
         Returns the compression controller state, which is the map of the algorithm name to the dictionary with the
         corresponding state attributes.
         """
 
     @abstractmethod
-    def get_compression_state(self) -> Dict[str, Any]:
+    def get_compression_state(self) -> dict[str, Any]:
         """
         Returns the compression state - builder and controller state.
         This state should be used to unambiguously resume compression via `compression_state` argument of
@@ -236,7 +237,9 @@ class CompressionAlgorithmController(ABC):
             need to keep track of statistics on each training batch/step/iteration.
         """
 
-    def strip_model(self, model: TModel, do_copy: bool = False) -> TModel:
+    def strip_model(
+        self, model: TModel, do_copy: bool = False, strip_format: StripFormat = StripFormat.NATIVE
+    ) -> TModel:
         """
         Strips auxiliary layers that were used for the model compression, as it's
         only needed for training. The method is used before exporting the model
@@ -244,6 +247,7 @@ class CompressionAlgorithmController(ABC):
 
         :param model: The compressed model.
         :param do_copy: Modify copy of the model, defaults to False.
+        :param strip format: Describes the format in which model is saved after strip.
         :return: The stripped model.
         """
         if do_copy:
@@ -256,25 +260,26 @@ class CompressionAlgorithmController(ABC):
         """
         self._model = self.strip_model(self._model)
 
-    def strip(self, do_copy: bool = True) -> TModel:  # type: ignore[type-var]
+    def strip(self, do_copy: bool = True, strip_format: StripFormat = StripFormat.NATIVE) -> TModel:  # type: ignore[type-var]
         """
-        Returns the model object with as much custom NNCF additions as possible removed
-        while still preserving the functioning of the model object as a compressed model.
+        Removes auxiliary layers and operations added during the compression process, resulting in a clean
+        model ready for deployment. The functionality of the model object is still preserved as a compressed model.
 
         :param do_copy: If True (default), will return a copy of the currently associated model object. If False,
           will return the currently associated model object "stripped" in-place.
+        :param strip format: Describes the format in which model is saved after strip.
         :return: The stripped model.
         """
-        return self.strip_model(self.model, do_copy)  # type: ignore
+        return self.strip_model(self.model, do_copy, strip_format)  # type: ignore
 
     @abstractmethod
     def export_model(
         self,
         save_path: str,
         save_format: Optional[str] = None,
-        input_names: Optional[List[str]] = None,
-        output_names: Optional[List[str]] = None,
-        model_args: Optional[Tuple[Any, ...]] = None,
+        input_names: Optional[list[str]] = None,
+        output_names: Optional[list[str]] = None,
+        model_args: Optional[tuple[Any, ...]] = None,
     ) -> None:
         """
         Exports the compressed model to the specified format for deployment.
@@ -388,7 +393,7 @@ class CompressionAlgorithmBuilder(ABC):
         """
 
     @abstractmethod
-    def load_state(self, state: Dict[str, Any]) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         """
         Initializes object from the supplied state.
 
@@ -396,7 +401,7 @@ class CompressionAlgorithmBuilder(ABC):
         """
 
     @abstractmethod
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """
         Returns a dictionary with Python data structures (dict, list, tuple, str, int, float, True, False, None) that
         represents state of the object.
@@ -415,7 +420,7 @@ class CompressionLevel(IntEnum):
     FULL = 2
 
     @classmethod
-    def map_legacy_level_to_stage(cls) -> Dict[CompressionLevel, CompressionStage]:
+    def map_legacy_level_to_stage(cls) -> dict[CompressionLevel, CompressionStage]:
         return {
             CompressionLevel.NONE: CompressionStage.UNCOMPRESSED,
             CompressionLevel.PARTIAL: CompressionStage.PARTIALLY_COMPRESSED,

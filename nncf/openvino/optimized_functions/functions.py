@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 from nncf.common.utils.caching import disable_results_caching
 from nncf.openvino.optimized_functions.models import OV_MODEL_CACHE
@@ -24,7 +24,7 @@ from nncf.tensor import Tensor
 from nncf.tensor import TensorBackend
 from nncf.tensor import TensorDataType
 
-ReductionAxes = Union[int, Tuple[int, ...]]
+ReductionAxes = Union[int, tuple[int, ...]]
 
 
 def do_int_quantization(
@@ -33,8 +33,7 @@ def do_int_quantization(
     reduction_axes: Optional[ReductionAxes] = None,
     precomputed_scale: Tensor = None,
     precomputed_zero_point: Tensor = None,
-    **kwargs,
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """
     Quantizes the given weight tensor.
 
@@ -50,10 +49,7 @@ def do_int_quantization(
     scale_shape = None if precomputed_scale is None else precomputed_scale.shape
     zero_point_shape = None if precomputed_zero_point is None else precomputed_zero_point.shape
 
-    ov_model_params = OVModelParameters(
-        dynamic_shapes=kwargs.get("dynamic_shapes") is True,
-        convertable_division=kwargs.get("convertable_division") is True,
-    )
+    ov_model_params = OVModelParameters()
     ov_model_params.input_dtypes["weight"] = weight.dtype
     if precomputed_scale is not None:
         ov_model_params.input_dtypes["scale"] = precomputed_scale.dtype
@@ -108,8 +104,7 @@ def quantize_dequantize_weight(
     precomputed_scale: Optional[Tensor] = None,
     precomputed_zero_point: Optional[Tensor] = None,
     return_compressed_weight: Optional[bool] = False,
-    **kwargs,
-) -> Union[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor, Tensor, Tensor]]:
     """
     Quantizes the given weight tensor and then dequantizes it back to obtain float32 values.
 
@@ -133,10 +128,7 @@ def quantize_dequantize_weight(
     scale_shape = precomputed_scale.shape if precomputed_scale is not None else None
     zero_point_shape = precomputed_zero_point.shape if precomputed_zero_point is not None else None
 
-    ov_model_params = OVModelParameters(
-        dynamic_shapes=kwargs.get("dynamic_shapes") is True,
-        convertable_division=kwargs.get("convertable_division") is True,
-    )
+    ov_model_params = OVModelParameters()
     ov_model_params.input_dtypes["weight"] = weight.dtype
     if precomputed_scale is not None:
         ov_model_params.input_dtypes["scale"] = precomputed_scale.dtype

@@ -11,9 +11,9 @@
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Iterable, Optional, TypeVar, Union
 
-import openvino.runtime as ov
+import openvino as ov
 from openvino._offline_transformations import compress_quantize_weights_transformation
 
 from nncf.common.factory import NNCFGraphFactory
@@ -32,6 +32,7 @@ from nncf.openvino.quantization.backend_parameters import is_weight_compression_
 from nncf.openvino.quantization.quantize_ifmodel import apply_algorithm_if_bodies
 from nncf.openvino.rt_info import dump_parameters
 from nncf.parameters import BackupMode
+from nncf.parameters import CompressionFormat
 from nncf.parameters import CompressWeightsMode
 from nncf.parameters import DropType
 from nncf.parameters import ModelType
@@ -191,7 +192,7 @@ def quantize_with_accuracy_control_impl(
     model: ov.Model,
     calibration_dataset: Dataset,
     validation_dataset: Dataset,
-    validation_fn: Callable[[Any, Iterable[Any]], Tuple[float, Union[None, List[float], List[List[TTensor]]]]],
+    validation_fn: Callable[[Any, Iterable[Any]], tuple[float, Union[None, list[float], list[list[TTensor]]]]],
     max_drop: float = 0.01,
     drop_type: DropType = DropType.ABSOLUTE,
     preset: Optional[QuantizationPreset] = None,
@@ -363,7 +364,7 @@ def quantize_impl(
 
 def compress_weights_impl(
     model: ov.Model,
-    dataset: Dataset,
+    dataset: Optional[Dataset],
     mode: CompressWeightsMode,
     ratio: float,
     group_size: int,
@@ -376,6 +377,7 @@ def compress_weights_impl(
     gptq: bool,
     lora_correction: bool,
     backup_mode: BackupMode,
+    compression_format: CompressionFormat,
     advanced_parameters: Optional[AdvancedCompressionParameters] = None,
 ) -> ov.Model:
     """
@@ -396,6 +398,7 @@ def compress_weights_impl(
         gptq,
         lora_correction,
         backup_mode,
+        compression_format,
         advanced_parameters,
     )
 

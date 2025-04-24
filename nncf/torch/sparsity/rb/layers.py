@@ -8,27 +8,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Dict, List
+from typing import Any
 
 import torch
 
 from nncf.torch.functions import logit
 from nncf.torch.layer_utils import COMPRESSION_MODULES
 from nncf.torch.layer_utils import CompressionParameter
-from nncf.torch.layer_utils import StatefullModuleInterface
+from nncf.torch.layer_utils import StatefulModuleInterface
 from nncf.torch.sparsity.layers import BinaryMask
 from nncf.torch.sparsity.rb.functions import binary_mask
 from nncf.torch.sparsity.rb.functions import calc_rb_binary_mask
 
 
 @COMPRESSION_MODULES.register()
-class RBSparsifyingWeight(BinaryMask, StatefullModuleInterface):
+class RBSparsifyingWeight(BinaryMask, StatefulModuleInterface):
     WEIGHTS_SHAPE_KEY = "weight_shape"
     FROZEN_KEY = "frozen"
     COMPRESSION_LR_MULTIPLIER_KEY = "compression_lr_multiplier"
     EPS_KEY = "eps"
 
-    def __init__(self, weight_shape: List[int], frozen=True, compression_lr_multiplier=None, eps=1e-6):
+    def __init__(self, weight_shape: list[int], frozen=True, compression_lr_multiplier=None, eps=1e-6):
         super().__init__(weight_shape)
         self.frozen = frozen
         self.eps = eps
@@ -58,7 +58,7 @@ class RBSparsifyingWeight(BinaryMask, StatefullModuleInterface):
     def loss(self):
         return binary_mask(self._mask)
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         return {
             self.WEIGHTS_SHAPE_KEY: list(self.mask.shape),
             self.FROZEN_KEY: self.frozen,
@@ -67,7 +67,7 @@ class RBSparsifyingWeight(BinaryMask, StatefullModuleInterface):
         }
 
     @classmethod
-    def from_config(cls, state: Dict[str, Any]) -> "RBSparsifyingWeight":
+    def from_config(cls, state: dict[str, Any]) -> "RBSparsifyingWeight":
         return RBSparsifyingWeight(
             weight_shape=state[cls.WEIGHTS_SHAPE_KEY],
             frozen=state[cls.FROZEN_KEY],

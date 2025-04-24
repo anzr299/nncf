@@ -8,14 +8,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import numpy as np
 
 import nncf
 from nncf.common.logging.logger import nncf_logger
+from nncf.common.utils.backend import is_openvino_at_least
 from nncf.common.utils.backend import is_openvino_available
 from nncf.parameters import CompressWeightsMode
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
@@ -25,7 +26,7 @@ from nncf.tensor import functions as fns
 from nncf.tensor.definitions import TensorBackend
 from nncf.tensor.definitions import TensorDataType
 
-ReductionAxes = Union[int, Tuple[int, ...]]
+ReductionAxes = Union[int, tuple[int, ...]]
 
 NF4_QUANTILES = np.array(
     [
@@ -49,7 +50,26 @@ NF4_QUANTILES = np.array(
     dtype=np.float32,
 )
 
-CENTER_OF_NF4_QUANTILES = (NF4_QUANTILES[1:] + NF4_QUANTILES[:-1]) / 2
+CENTER_OF_NF4_QUANTILES = np.array(
+    [
+        -0.84809643,
+        -0.6106329,
+        -0.45999527,
+        -0.33967942,
+        -0.2346074,
+        -0.13791174,
+        -0.045525018,
+        0.03979015,
+        0.120255254,
+        0.20352125,
+        0.29201376,
+        0.38931254,
+        0.5016634,
+        0.6427869,
+        0.8614784,
+    ],
+    dtype=np.float32,
+)
 
 
 @dataclass
@@ -70,7 +90,7 @@ class CompressedWeight:
 
 def reshape_weight_for_grouped_quantization(
     weight: Tensor, reduction_axes: ReductionAxes, group_size: int
-) -> Tuple[Tensor, int]:
+) -> tuple[Tensor, int]:
     """
     Reshapes weight for group-wise quantization and return a reduction axis for collecting statistics per group
     dimension. Having a transposed weight with shapes [c_out, c_in] and group size = 128, shape of reshaped weight is
@@ -89,8 +109,8 @@ def reshape_weight_for_grouped_quantization(
         raise nncf.UnsupportedModelError(msg)
     channel_size = weight.shape[reduction_axes]
     if channel_size % group_size != 0:
-        msg = f"Channel size {channel_size} should be divisible by size of group {group_size}"
-        raise nncf.UnsupportedModelError(msg)
+        msg = f"Channel size {channel_size} should be divisible by size of group {group_size}."
+        raise nncf.InvalidGroupSizeError(msg)
 
     num_groups_per_channel = channel_size // group_size
     shape = list(weight.shape)  # [a1, r, a2] - "r" refers to number of channels along reduction axis
@@ -149,13 +169,13 @@ def calculate_signed_scale(weight: Tensor, reduction_axes: ReductionAxes, num_bi
     :param num_bits: number of bits in compression.
     :return: Scale tensor.
     """
-    level_high = 2 ** (num_bits - 1)
+    factor = 2 ** (num_bits - 1)
 
     w_abs_min = fns.abs(fns.min(weight, axis=reduction_axes, keepdims=True))
     w_max = fns.max(weight, axis=reduction_axes, keepdims=True)
 
     scale = fns.where(w_abs_min >= w_max, w_abs_min, -w_max)
-    scale /= level_high
+    scale /= factor
 
     eps = fns.finfo(scale).eps
     scale = fns.where(fns.abs(scale) < eps, eps, scale)
@@ -221,7 +241,7 @@ def calculate_normalized_weight_and_fp4_scale(
     group_size: int = -1,
     precomputed_scale: Tensor = None,
     mode: CompressWeightsMode = CompressWeightsMode.NF4,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """
     Calculates scale for fp4 (nf4, e2m1) quantization and normalizes weights by the scale.
     Weights are reshaped in case of positive value of group size.
@@ -253,7 +273,7 @@ def calculate_integer_quantization_params(
     weight: Tensor,
     reduction_axes: ReductionAxes,
     config: WeightCompressionConfig,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """
     Calculates the scale and zero point for uniform quantization (INT4, INT8), when the range of values is divided into
     equal intervals, and each interval is assigned a quant.
@@ -368,7 +388,7 @@ def compress_weight(
     config: WeightCompressionConfig,
     precomputed_scale: Tensor = None,
     precomputed_zero_point: Tensor = None,
-):
+) -> CompressedWeight:
     """
     Compress weight using compression configuration.
 
@@ -443,8 +463,7 @@ def do_int_quantization(
     reduction_axes: Optional[ReductionAxes] = None,
     precomputed_scale: Tensor = None,
     precomputed_zero_point: Tensor = None,
-    **kwargs,
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """
     Performs integer quantization on the given weight tensor.
 
@@ -475,9 +494,7 @@ def do_int_quantization(
     if _can_run_optimized(weight.backend):
         from nncf.openvino.optimized_functions import do_int_quantization as do_int_quantization_ov
 
-        return do_int_quantization_ov(
-            weight, config, reduction_axes, precomputed_scale, precomputed_zero_point, **kwargs
-        )
+        return do_int_quantization_ov(weight, config, reduction_axes, precomputed_scale, precomputed_zero_point)
 
     # Reference implementation
     if weight.backend == TensorBackend.ov:
@@ -507,8 +524,7 @@ def quantize_dequantize_weight(
     precomputed_scale: Optional[Tensor] = None,
     precomputed_zero_point: Optional[Tensor] = None,
     return_compressed_weight: Optional[bool] = False,
-    **kwargs,
-) -> Union[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor, Tensor, Tensor]]:
     """
     First quantizes the given weight tensor and then dequantizes it back to obtain float32 values.
     :param weight: The weight tensor to quantize-dequantize.
@@ -533,7 +549,6 @@ def quantize_dequantize_weight(
             precomputed_scale,
             precomputed_zero_point,
             return_compressed_weight,
-            **kwargs,
         )
 
     # Reference implementation
@@ -548,9 +563,15 @@ def quantize_dequantize_weight(
 
 
 def _can_run_optimized(input_backend: TensorBackend) -> bool:
-    if input_backend in [TensorBackend.ov, TensorBackend.numpy]:
+    if (
+        input_backend in [TensorBackend.ov, TensorBackend.numpy]
+        and os.environ.get("NNCF_DISABLE_OPTIMIZED_COMPRESSION") is None
+    ):
         if is_openvino_available():
-            return True
+            from nncf.openvino.cpu_info import is_arm_cpu
+
+            # Due to a bug in CPU plugin compression models can fail at compilation on ARM CPUs. Ticket: 164135.
+            return not is_arm_cpu() or is_openvino_at_least("2025.2")
         else:
             nncf_logger.info_once(
                 "OpenVINO optimizations are disabled. Install OpenVINO to enable them and improve the performance."

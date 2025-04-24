@@ -9,7 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from copy import deepcopy
-from typing import List
 
 import torch
 import torch.distributed as dist
@@ -61,7 +60,7 @@ class RBSparsityController(BaseSparsityAlgoController):
     Controller for the regularization-based (RB) sparsity algorithm in PT.
     """
 
-    def __init__(self, target_model: NNCFNetwork, sparsified_module_info: List[SparseModuleInfo], config: NNCFConfig):
+    def __init__(self, target_model: NNCFNetwork, sparsified_module_info: list[SparseModuleInfo], config: NNCFConfig):
         super().__init__(target_model, sparsified_module_info)
         algo_config = extract_algo_specific_config(config, "rb_sparsity")
         params = deepcopy(algo_config.get("params", {}))
@@ -132,7 +131,7 @@ class RBSparsityController(BaseSparsityAlgoController):
         if not self._distributed or get_world_size() == 1:
             return 1
 
-        nvalues = 0
+        num_values = 0
         ncor_values = 0
         eps = 1e-4
         for minfo in self.sparsified_module_info:
@@ -145,9 +144,9 @@ class RBSparsityController(BaseSparsityAlgoController):
             for i in range(1, len(mask_list)):
                 rel_error = (mask_list[0] - mask_list[i]) / mask_list[0]
                 ncor_values = ncor_values + (rel_error.abs() < eps).sum(dtype=mask.dtype)
-                nvalues = nvalues + mask_list[i].numel()
+                num_values = num_values + mask_list[i].numel()
 
-        return ncor_values / nvalues
+        return ncor_values / num_values
 
     def statistics(self, quickly_collected_only=False) -> NNCFStatistics:
         collector = PTSparseModelStatisticsCollector(self.model, self.sparsified_module_info)

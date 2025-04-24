@@ -10,7 +10,7 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import List, Tuple, TypeVar
+from typing import TypeVar
 
 import numpy as np
 import torch
@@ -41,6 +41,16 @@ class ReferenceQuantize:
             return tensor.astype(dtype)
         return tensor.type(dtype)
 
+    def _sign(self, tensor: GeneralizedTensor) -> GeneralizedTensor:
+        if self.backend is np:
+            return np.sign(tensor)
+        return torch.sign(tensor)
+
+    def _reciprocal(self, tensor: GeneralizedTensor) -> GeneralizedTensor:
+        if self.backend is np:
+            return np.reciprocal(tensor)
+        return torch.reciprocal(tensor)
+
     def forward(
         self, input_: GeneralizedTensor, input_low: GeneralizedTensor, input_range: GeneralizedTensor, levels: int
     ) -> GeneralizedTensor:
@@ -64,7 +74,7 @@ class ReferenceQuantize:
         level_low: int,
         level_high: int,
         is_asymmetric: bool = False,
-    ) -> List[GeneralizedTensor]:
+    ) -> list[GeneralizedTensor]:
         # is_asymmetric is unused, present only to correspond to the CPU signature of calling "backward"
         mask_hi = input_ > (input_low + input_range)
         mask_hi = self._astype(mask_hi, input_.dtype)
@@ -72,8 +82,8 @@ class ReferenceQuantize:
         mask_lo = self._astype(mask_lo, input_.dtype)
 
         mask_in = 1 - mask_hi - mask_lo
-        range_sign = np.sign(input_range)
-        err = (output - input_) * np.reciprocal(input_range * range_sign)
+        range_sign = self._sign(input_range)
+        err = (output - input_) * self._reciprocal(input_range * range_sign)
         grad_range = grad_output * (err * mask_in + range_sign * (level_low / level_high) * mask_lo + mask_hi)
         grad_range = sum_like(grad_range, input_range)
 
@@ -85,7 +95,7 @@ class ReferenceQuantize:
 
     def tune_range(
         self, input_low: GeneralizedTensor, input_range: GeneralizedTensor, levels: int
-    ) -> Tuple[GeneralizedTensor, GeneralizedTensor]:
+    ) -> tuple[GeneralizedTensor, GeneralizedTensor]:
         input_high = input_range + input_low
         input_low[input_low > 0] = 0
         input_high[input_high < 0] = 0

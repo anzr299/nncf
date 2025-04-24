@@ -20,7 +20,6 @@ from nncf.common.utils.backend import BackendType
 from nncf.experimental.torch.fx.commands import FXApplyTransformationCommand
 from nncf.experimental.torch.fx.nncf_graph_builder import GraphConverter
 from nncf.parameters import TargetDevice
-from nncf.quantization.algorithms.min_max.algorithm import MinMaxQuantization
 from nncf.quantization.algorithms.min_max.torch_fx_backend import FXMinMaxAlgoBackend
 from nncf.scopes import IgnoredScope
 from nncf.torch.graph.graph import PTNNCFGraph
@@ -36,8 +35,8 @@ from tests.common.quantization.metatypes import SoftmaxTestMetatype
 from tests.cross_fw.test_templates.test_ptq_params import TemplateTestPTQParams
 from tests.torch.fx.helpers import get_single_conv_nncf_graph
 from tests.torch.fx.helpers import get_torch_fx_model_q_transformed
-from tests.torch.ptq.helpers import get_single_no_weight_matmul_nncf_graph
 from tests.torch.test_models.synthetic import LinearPTQParamsTestModel
+from tests.torch2.function_hook.quantization.helper import get_single_no_weight_matmul_nncf_graph
 
 
 def get_hw_patterns(device: TargetDevice = TargetDevice.ANY) -> GraphPattern:
@@ -46,13 +45,6 @@ def get_hw_patterns(device: TargetDevice = TargetDevice.ANY) -> GraphPattern:
 
 def get_ignored_patterns(device: TargetDevice = TargetDevice.ANY) -> GraphPattern:
     return PatternsManager.get_full_ignored_pattern_graph(backend=BackendType.TORCH_FX, device=device)
-
-
-@pytest.mark.parametrize("target_device", TargetDevice)
-def test_target_device(target_device):
-    min_max_algo = MinMaxQuantization(target_device=target_device)
-    min_max_algo._backend_entity = FXMinMaxAlgoBackend()
-    assert min_max_algo._target_device == target_device
 
 
 class TestPTQParams(TemplateTestPTQParams):
