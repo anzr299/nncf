@@ -28,9 +28,8 @@ from nncf.parameters import SensitivityMetric
 from nncf.quantization.algorithms.algorithm import Algorithm
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionParameters
-from nncf.quantization.algorithms.weight_compression.weight_lowering import do_int_dequantization
-from nncf.quantization.algorithms.weight_compression.weight_lowering import do_int_quantization
 from nncf.quantization.algorithms.weight_compression.weight_lowering import get_integer_quantization_error
+from nncf.quantization.algorithms.weight_compression.weight_lowering import integer_quantize_dequantize_weight
 from nncf.tensor import Tensor
 from nncf.tensor import functions as fns
 from nncf.tensor.definitions import TensorDataType
@@ -232,6 +231,10 @@ class DataBasedCriterion(DataFreeCriterion, ABC):
             from nncf.quantization.algorithms.weight_compression.torch_backend import PTMixedPrecisionAlgoBackend
 
             self._backend_entity = PTMixedPrecisionAlgoBackend()
+        elif model_backend == BackendType.TORCH_FX:
+            from nncf.quantization.algorithms.weight_compression.torch_fx_backend import FXMixedPrecisionAlgoBackend
+
+            self._backend_entity = FXMixedPrecisionAlgoBackend()
         else:
             msg = f"Cannot return backend-specific entity because {model_backend.value} is not supported!"
             raise nncf.UnsupportedBackendError(msg)
@@ -358,8 +361,7 @@ class HAWQCriterion(DataBasedCriterion):
         if weight.dtype != TensorDataType.float32:
             weight = weight.astype(TensorDataType.float32)
 
-        compressed_weights, scale, zero_point = do_int_quantization(weight, backup_config, reduction_axes)
-        decompressed_weight = do_int_dequantization(compressed_weights, scale, zero_point)
+        decompressed_weight = integer_quantize_dequantize_weight(weight, backup_config, reduction_axes)
         decompressed_weight = decompressed_weight.reshape(orig_shape)
         return fns.linalg.norm(decompressed_weight - weight, ord="fro").item()
 
