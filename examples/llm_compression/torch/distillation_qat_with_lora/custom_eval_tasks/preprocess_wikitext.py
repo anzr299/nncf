@@ -8,7 +8,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# MIT License
+# Copyright (c) 2020 EleutherAI
+#
+
 import re
+
+# Modification Notes: the file was taken as is from lm-eval-harness:
+# https://github.com/EleutherAI/lm-evaluation-harness/blob/main/lm_eval/tasks/wikitext/preprocess_wikitext.py
 
 
 def wikitext_detokenizer(doc):
