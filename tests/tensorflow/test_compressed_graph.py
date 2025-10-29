@@ -254,35 +254,11 @@ def get_test_models_desc(algorithm):
             ModelDesc(ref_name("xception.pb"), test_models.Xception, [1, 71, 71, 3]),
             marks=SKIP_MAP[algorithm].get("xception", ()),
         ),
-        pytest.param(
-            ModelDesc(ref_name("retinanet.pb"), test_models.RetinaNet, [1, 603, 603, 3]),
-            marks=SKIP_MAP[algorithm].get("retinanet", ()),
-        ),
         ModelDesc(ref_name("sequential_model.pb"), test_models.SequentialModel, [1, 224, 224, 3]),
         ModelDesc(ref_name("sequential_no_input_model.pb"), test_models.SequentialModelNoInput, [1, 224, 224, 3]),
         pytest.param(
-            ModelDesc(ref_name("mobilenet_v3_small.pb"), test_models.MobileNetV3Small, [1, 32, 32, 3]),
-            marks=SKIP_MAP[algorithm].get("mobilenet_v3_small", ()),
-        ),
-        pytest.param(
-            ModelDesc(ref_name("mobilenet_v3_large.pb"), test_models.MobileNetV3Large, [1, 32, 32, 3]),
-            marks=SKIP_MAP[algorithm].get("mobilenet_v3_large", ()),
-        ),
-        pytest.param(
             ModelDesc(ref_name("shared_layers_model.pb"), test_models.SharedLayersModel, [1, 30, 30, 3]),
             marks=SKIP_MAP[algorithm].get("shared_layers_model", ()),
-        ),
-        pytest.param(
-            ModelDesc("mask_rcnn.dot", test_models.MaskRCNN, [1, 1024, 1024, 3], unstable_node_names=True),
-            marks=SKIP_MAP[algorithm].get("mask_rcnn", ()),
-        ),
-        pytest.param(
-            ModelDesc(ref_name("yolo_v4.pb"), test_models.YOLOv4, [1, 603, 603, 3]),
-            marks=SKIP_MAP[algorithm].get("yolo_v4", ()),
-        ),
-        pytest.param(
-            ModelDesc("mobilenet_v2_slim.dot", test_models.HubMobileNetV2, [1, 224, 224, 3], True),
-            marks=SKIP_MAP[algorithm].get("mobilenet_v2_slim", ()),
         ),
     ]
 
@@ -495,7 +471,6 @@ class TestModelsGraph:
 
 QUANTIZE_OUTPUTS_MODELS = [
     ModelDesc("mobilenet_v2_quantize_outputs.pb", test_models.MobileNetV2, [1, 96, 96, 3]),
-    ModelDesc("retinanet_quantize_outputs.pb", test_models.RetinaNet, [1, 603, 603, 3]),
     ModelDesc("sequential_model_quantize_outputs.pb", test_models.SequentialModel, [1, 224, 224, 3]),
     ModelDesc("shared_layers_model_quantize_outputs.pb", test_models.SharedLayersModel, [1, 30, 30, 3]),
 ]
@@ -529,6 +504,8 @@ TEST_HW_MODELS_DESC = [
 @pytest.mark.parametrize("desc", TEST_HW_MODELS_DESC, ids=[m.model_name for m in TEST_HW_MODELS_DESC])
 @pytest.mark.parametrize("hw_config_type", TYPE_HW, ids=[hw.value for hw in TYPE_HW])
 def test_compressed_graph_models_hw(desc: ModelDesc, hw_config_type):
+    if hw_config_type == HWConfigType.GPU and desc.model_name in ["mobilenet_v2", "resnet50"]:
+        pytest.xfail("Ticket: 175018")
     model = desc.model_builder(input_shape=tuple(desc.input_sample_sizes[1:]))
 
     quant_params = {"activations": ("asymmetric", "per_tensor"), "weights": ("symmetric", "per_channel")}

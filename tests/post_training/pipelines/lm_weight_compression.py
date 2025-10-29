@@ -242,6 +242,17 @@ class LMWeightCompression(BaseTestPipeline):
                 fx_inputs += (torch.from_numpy(inputs["input_ids"]).to(self.model_hf.device),)
                 fx_inputs += (torch.from_numpy(inputs["position_ids"]).to(self.model_hf.device).squeeze(0),)
                 inputs = fx_inputs
+            elif self.backend == BackendType.ONNX:
+                batch_size = input_ids.shape[0]
+                onnx_type_to_numpy = {
+                    "tensor(float)": np.float32,
+                    "tensor(int64)": np.int64,
+                }
+                for input_name in self.model_hf.key_value_input_names:
+                    inputs[input_name] = np.zeros(
+                        shape=(1, 4, 0, 64), dtype=onnx_type_to_numpy[self.model_hf.input_dtypes[input_name]]
+                    )
+
             return inputs
 
         return transform_fn
@@ -318,7 +329,7 @@ class LMWeightCompression(BaseTestPipeline):
                 if len(cached_ov_model_files) > 1:
                     msg = "Graph break encountered in torch compile!"
                     raise nncf.InternalError(msg)
-                elif len(cached_ov_model_files) == 0:
+                if len(cached_ov_model_files) == 0:
                     msg = "Openvino Model Files Not Found!"
                     raise FileNotFoundError(msg)
                 self.path_compressed_ir = cached_ov_model_files[0]
@@ -363,7 +374,7 @@ class LMWeightCompression(BaseTestPipeline):
 
             self.compressed_model = nncf.compress_weights(
                 self.model,
-                dataset=None,  # ONNX backend supports only data free compression
+                dataset=self.calibration_dataset,
                 **self.compression_params,
             )
         else:
@@ -392,7 +403,6 @@ class LMWeightCompression(BaseTestPipeline):
                 load_in_8bit=False,
                 compile=False,
                 stateful=is_stateful,
-                ov_config={"KV_CACHE_PRECISION": "f16"},
             )
             evaluator = Evaluator(base_model=model_gold, tokenizer=self.preprocessor, metrics=("similarity",))
             evaluator.dump_gt(str(gt_data_path))
@@ -403,33 +413,27 @@ class LMWeightCompression(BaseTestPipeline):
                 tokenizer=self.preprocessor, gt_data=gt_data_path, test_data=str(gt_data_path), metrics=("similarity",)
             )
 
-        compressed_model_hf = self.model_hf
-        if (
-            self.backend != BackendType.FP32
-            and self.backend != BackendType.FX_TORCH
-            and self.backend != BackendType.ONNX
-        ):
-            compressed_model_hf = OVModelForCausalLM.from_pretrained(
-                self.output_model_dir,
-                trust_remote_code=True,
-                load_in_8bit=False,
-                compile=False,
-                stateful=is_stateful,
-                ov_config={"KV_CACHE_PRECISION": "f16"},
-            )
-        if self.backend == BackendType.FX_TORCH:
-            compressed_model_hf = FXAutoModelForCausalLM(self.model, self.model_config)
-
-        if self.backend == BackendType.ONNX:
+        if self.backend == BackendType.FP32:
+            compressed_model_hf = self.model_hf
+        elif self.backend == BackendType.FX_TORCH:
+            compressed_model_hf = FXAutoModelForCausalLM(self.model, self.model_config, self.gen_config)
+        elif self.backend == BackendType.ONNX:
             compressed_model_hf = OVModelForCausalLM.from_pretrained(
                 self.output_model_dir,
                 trust_remote_code=True,
                 load_in_8bit=False,
                 compile=False,
                 stateful=False,
-                ov_config={"DYNAMIC_QUANTIZATION_GROUP_SIZE": "0", "KV_CACHE_PRECISION": "f16"},
                 export=False,
                 from_onnx=True,
+            )
+        else:
+            compressed_model_hf = OVModelForCausalLM.from_pretrained(
+                self.output_model_dir,
+                trust_remote_code=True,
+                load_in_8bit=False,
+                compile=False,
+                stateful=is_stateful,
             )
 
         print("Evaluation of the target model")
@@ -446,7 +450,6 @@ class LMWeightCompression(BaseTestPipeline):
                 load_in_8bit=False,
                 compile=False,
                 stateful=False,
-                ov_config={"DYNAMIC_QUANTIZATION_GROUP_SIZE": "0", "KV_CACHE_PRECISION": "f16"},
                 export=False,
                 from_onnx=True,
             )
