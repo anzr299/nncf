@@ -217,7 +217,6 @@ class AWQ(Algorithm):
         s = s.astype(TensorDataType.float32)
         X = X.astype(TensorDataType.float32)
 
-        is_3d_weight = weight.ndim == 3
         is_2d_weight = weight.ndim == 2
 
         assert isinstance(wp.reduction_axes, tuple) and len(wp.reduction_axes) == 1
@@ -234,6 +233,7 @@ class AWQ(Algorithm):
             s = fns.unsqueeze(s, 0)  # [hidden_dim] -> [1, hidden_dim]
             X = fns.unsqueeze(X, 0)  # [hidden_dim, samples] -> [1, hidden_dim, samples]
             weight = fns.unsqueeze(weight, 0)  # [out_features, hidden_dim] -> [1, out_features, hidden_dim]
+            reduction_axis += 1
 
         top_k = max(int(s.shape[-1] * self._percent_to_apply), 1)
         topk_idxs = fns.argsort(-s)[:, :top_k]
@@ -251,7 +251,7 @@ class AWQ(Algorithm):
 
         groups_to_correct = list(groups_to_correct)
 
-        if reduction_axis == 0 or (reduction_axis == 1 and is_3d_weight):
+        if reduction_axis == 1:
             # Weights
             # 3D: [num_experts, hidden_dimension, out_features] -> [num_experts, out_features, hidden_dimension]
             # 2D: [1, hidden_dimension, out_features] -> [1, out_features, hidden_dimension]
@@ -298,7 +298,7 @@ class AWQ(Algorithm):
                             magnitudes,
                             threshold,
                             cur_scale,
-                            prev_w[offset : offset + group_size]
+                            prev_w[expert_idx, offset : offset + group_size]
                             * prev_s
                             * prev_weight.shape[reduction_axis]
                             / threshold,
