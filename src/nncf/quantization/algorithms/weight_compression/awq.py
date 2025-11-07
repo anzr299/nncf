@@ -183,7 +183,7 @@ class AWQ(Algorithm):
                     prev_statistics = statistics[merge_node.node_name]
                 scale = self._data_aware_step(wp, weight, statistics[k], prev_weight, prev_statistics)
 
-            w_scale = fns.unsqueeze(scale, -wp.reduction_axes[0])
+            w_scale = fns.unsqueeze(scale, -1 - wp.reduction_axes[0])
             a_scale = fns.unsqueeze(1.0 / scale, -wp.reduction_axes[0])
 
             scaled_weight = (weight * w_scale).astype(weight_dtype)
