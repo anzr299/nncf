@@ -78,7 +78,7 @@ class AWQ(Algorithm):
         :param prefer_data_aware_scaling: Determines whether to use activations to calculate scales.
         """
         super().__init__()
-        self._subset_size = subset_size
+        self._subset_size = 2048
         self._percent_to_apply = percent_to_apply
         self._alpha_min = alpha_min
         self._alpha_max = alpha_max
