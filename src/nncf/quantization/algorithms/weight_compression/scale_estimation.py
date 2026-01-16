@@ -55,7 +55,7 @@ class ScaleEstimation:
         :param weight_penalty: coefficient for penalty between fp and compressed weights. If -1 then doesn't apply.
         """
         super().__init__()
-        self._subset_size = 2048
+        self._subset_size = 256
         self._initial_steps = initial_steps
         self._scale_steps = scale_steps
         self._weight_penalty = weight_penalty
