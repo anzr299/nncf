@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -113,13 +113,22 @@ class GPTQ:
         target_node_iterator = self._layerwise_engine.create_iterator_through_target_nodes(
             model, graph, target_nodes, dataset, statistic_points
         )
-        for node, inputs in track(target_node_iterator, total=len(target_nodes), description="Applying GPTQ"):
+
+        description = "Applying GPTQ"
+        if self._scale_estimation:
+            description += " with Scale Estimation"
+        for node, inputs in track(target_node_iterator, total=len(target_nodes), description=description):
             wc_params = target_nodes_wc_params_map[node]
             if wc_params.compression_config.mode in [
                 CompressWeightsMode.INT8_ASYM,
                 CompressWeightsMode.INT8_SYM,
             ]:
                 continue
+
+            if self._backend_entity.matmul_has_transposed_activations(wc_params.node_with_weight, graph):
+                msg = "Transposed activations are not supported yet for the GPTQ algorithm"
+                raise nncf.UnsupportedModelError(msg)
+
             _, input_tensors = next(iter(inputs.items()))
             hessian = self._calculate_hessian(node, input_tensors)
             scale, zero_point = self._quantize_weights(model, graph, wc_params, hessian, input_tensors)

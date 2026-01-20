@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -20,14 +20,11 @@ from dataclasses import is_dataclass
 from enum import Enum
 from typing import Any, Optional, Union
 
-import nncf
 from nncf.common.quantization.quantizer_propagation.structs import QuantizerPropagationRule
 from nncf.common.quantization.structs import QuantizationScheme as QuantizationMode
 from nncf.common.utils.api_marker import api
 from nncf.parameters import StrEnum
-from nncf.quantization.range_estimator import AggregatorType
 from nncf.quantization.range_estimator import RangeEstimatorParameters
-from nncf.quantization.range_estimator import StatisticsType
 
 TTensor = Any
 
@@ -69,7 +66,6 @@ class FP8Type(StrEnum):
 
     :param E4M3: Mode with 4-bit exponent and 3-bit mantissa.
     :param E5M2: Mode with 5-bit exponent and 2-bit mantissa.
-
     """
 
     E4M3 = "f8e4m3"
@@ -222,9 +218,8 @@ class AdvancedQuantizationParameters:
     :type disable_bias_correction: bool
     :param batchwise_statistics: Determines whether quantizer statistics should be calculated
         for each item of the batch or for the entire batch, default is None.
-        "None" means that if torch.DataLoader or tensorflow.Dataset was passed as a data source for
-        the calibration dataset, then in case batch_size of the data source > 1 batchwise_statistics sets to True,
-        otherwise sets to False.
+        "None" means that if torch.DataLoader was passed as a data source for the calibration dataset,
+        then in case batch_size of the data source > 1 batchwise_statistics sets to True, otherwise sets to False.
     :type batchwise_statistics: Optional[bool]
     :param quantizer_propagation_rule: An instance of the `QuantizerPropagationRule` enum that
         specifies how quantizers should be propagated and merged across branching nodes in the
@@ -398,7 +393,7 @@ class AdvancedCompressionParameters:
     :type lora_adapter_rank: int
     :param group_size_fallback_mode: Specifies how to handle nodes that do not support the given group size.
     :type group_size_fallback_mode: GroupSizeFallbackMode
-    :param min_adjusted_group_size: Minimum group size for adjustable group size searching. Defaults to 16. The reason
+    :param min_adjusted_group_size: Minimum group size for adjustable group size searching. Defaults to 32. The reason
         behind this argument is to avoid too small group size values, which may lead to performance issues.
     :type min_adjusted_group_size: int
     :param awq_params: Advanced parameters for AWQ algorithm.
@@ -418,8 +413,8 @@ class AdvancedCompressionParameters:
 
     statistics_path: Optional[str] = None
     lora_adapter_rank: int = 256
-    group_size_fallback_mode: GroupSizeFallbackMode = GroupSizeFallbackMode.IGNORE
-    min_adjusted_group_size: int = 16
+    group_size_fallback_mode: GroupSizeFallbackMode = GroupSizeFallbackMode.ERROR
+    min_adjusted_group_size: int = 32
     awq_params: AdvancedAWQParameters = field(default_factory=AdvancedAWQParameters)
     scale_estimation_params: AdvancedScaleEstimationParameters = field(
         default_factory=AdvancedScaleEstimationParameters
@@ -503,144 +498,3 @@ def convert_to_dict_recursively(params: Any) -> dict[str, Any]:
             result[f.name] = value
 
     return result
-
-
-def convert_quantization_parameters_to_dict(params: Optional[QuantizationParameters]) -> dict[str, Any]:
-    """
-    Converts quantization parameters to the dict in the legacy format
-
-    :param params: Quantization parameters
-    :return: Quantization parameters as dict in the legacy format
-    """
-    result: dict[str, Any] = {}
-    if params is not None:
-        if params.num_bits is not None:
-            result["bits"] = params.num_bits
-        if params.mode is not None:
-            result["mode"] = params.mode
-        if params.signedness_to_force is not None:
-            result["signed"] = params.signedness_to_force
-        if params.per_channel is not None:
-            result["per_channel"] = params.per_channel
-        if params.narrow_range is not None:
-            msg = "narrow_range parameter is not supported in the legacy format"
-            raise nncf.ParameterNotSupportedError(msg)
-    return result
-
-
-def convert_range_estimator_parameters_to_dict(params: RangeEstimatorParameters) -> dict[str, Any]:
-    """
-    Converts range estimator parameters to the dict in the legacy format
-
-    :param params: Range estimator parameters
-    :return: range estimator parameters as dict in the legacy format
-    """
-    if params.min.clipping_value is not None or params.max.clipping_value is not None:
-        msg = "clipping_value parameter is not supported in the legacy format"
-        raise nncf.ParameterNotSupportedError(msg)
-
-    result: dict[str, Any] = {}
-    if (
-        params.min.statistics_type == StatisticsType.MIN
-        and params.min.aggregator_type == AggregatorType.MIN
-        and params.max.statistics_type == StatisticsType.MAX
-        and params.max.aggregator_type == AggregatorType.MAX
-    ):
-        result["type"] = "mixed_min_max"
-    elif (
-        params.min.statistics_type == StatisticsType.MIN
-        and params.min.aggregator_type == AggregatorType.MEAN
-        and params.max.statistics_type == StatisticsType.MAX
-        and params.max.aggregator_type == AggregatorType.MEAN
-    ):
-        result["type"] = "mean_min_max"
-    elif (
-        params.min.statistics_type == StatisticsType.QUANTILE
-        and params.min.aggregator_type == AggregatorType.MEAN
-        and params.max.statistics_type == StatisticsType.QUANTILE
-        and params.max.aggregator_type == AggregatorType.MEAN
-    ):
-        result["type"] = "mean_percentile"
-        result["params"] = {
-            "min_percentile": 1 - params.min.quantile_outlier_prob,
-            "max_percentile": 1 - params.max.quantile_outlier_prob,
-        }
-    elif (
-        params.min.statistics_type is None
-        and params.min.aggregator_type is None
-        and params.max.statistics_type is None
-        and params.max.aggregator_type is None
-    ):
-        return {}
-    else:
-        msg = f"The following range estimator parameters are not supported: {str(params)}"
-        raise nncf.ParameterNotSupportedError(msg)
-
-    return result
-
-
-def apply_advanced_parameters_to_config(
-    config: dict[str, Any], params: AdvancedQuantizationParameters
-) -> dict[str, Any]:
-    """
-    Apply advanced parameters to the config in the legacy format
-
-    :param config: NNCF config in legacy format
-    :param params: Advanced quantization parameters
-    :return: advanced quantization parameters as dict in the legacy format
-    """
-    config["overflow_fix"] = params.overflow_fix if params.overflow_fix is None else params.overflow_fix.value
-    config["quantize_outputs"] = params.quantize_outputs
-
-    if params.disable_bias_correction:
-        initializer = config.get("initializer", {})
-        initializer["batchnorm_adaptation"] = {"num_bn_adaptation_samples": 0}
-        config["initializer"] = initializer
-
-    if isinstance(params.activations_quantization_params, QuantizationParameters):
-        activations_config = convert_quantization_parameters_to_dict(params.activations_quantization_params)
-        if activations_config:
-            config["activations"] = activations_config
-
-    if isinstance(params.weights_quantization_params, QuantizationParameters):
-        weights_config = convert_quantization_parameters_to_dict(params.weights_quantization_params)
-        if weights_config:
-            config["weights"] = weights_config
-
-    activations_init_range_config = convert_range_estimator_parameters_to_dict(
-        params.activations_range_estimator_params
-    )
-    weights_init_range_config = convert_range_estimator_parameters_to_dict(params.weights_range_estimator_params)
-
-    if activations_init_range_config or weights_init_range_config:
-        initializer = config.get("initializer", {})
-        init_range = initializer.get("range", {})
-        global_num_init_samples = init_range.get("num_init_samples", None)
-        global_range_type = init_range.get("type", None)
-
-        activations_init_range_config["target_quantizer_group"] = "activations"
-        activations_init_range_config["target_scopes"] = "{re}.*"
-        if global_num_init_samples is not None:
-            activations_init_range_config["num_init_samples"] = global_num_init_samples
-        if "type" not in activations_init_range_config and global_range_type is not None:
-            activations_init_range_config["type"] = global_range_type
-
-        weights_init_range_config["target_quantizer_group"] = "weights"
-        weights_init_range_config["target_scopes"] = "{re}.*"
-        if global_num_init_samples is not None:
-            weights_init_range_config["num_init_samples"] = global_num_init_samples
-        if "type" not in weights_init_range_config and global_range_type is not None:
-            weights_init_range_config["type"] = global_range_type
-
-        initializer["range"] = [activations_init_range_config, weights_init_range_config]
-        config["initializer"] = initializer
-
-    if params.bias_correction_params.apply_for_all_nodes:
-        msg = "apply_for_all_nodes parameter of the BiasCorrection algorithm is not supported in the legacy format"
-        raise nncf.ParameterNotSupportedError(msg)
-
-    if params.bias_correction_params.threshold is not None:
-        msg = "threshold parameter of the BiasCorrection algorithm is not supported in the legacy format"
-        raise nncf.ParameterNotSupportedError(msg)
-
-    return config
