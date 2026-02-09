@@ -22,6 +22,7 @@ from torch.ao.quantization.quantizer.quantizer import QuantizationSpec
 from torch.ao.quantization.quantizer.quantizer import SharedQuantizationSpec
 
 import nncf
+from nncf import CompressWeightsMode
 from nncf.common.graph.graph import NNCFGraph
 from nncf.common.quantization.quantizer_setup import ActivationQuantizationInsertionPoint
 from nncf.common.quantization.quantizer_setup import QuantizationPointBase
@@ -49,6 +50,29 @@ class TorchAOQuantizerAdapter(Quantizer):
 
     def transform_prior_quantization(self, model: torch.fx.GraphModule) -> torch.fx.GraphModule:
         return self._quantizer.transform_for_annotation(model)
+
+    def _get_compression_mode_from_qconfig(qp: QuantizationPointBase):
+        if qp.qconfig.num_bits == 4 and qp.qconfig.mode == QuantizationMode.ASYMMETRIC:
+            return CompressWeightsMode.INT4_ASYM
+        if qp.qconfig.num_bits == 4 and qp.qconfig.mode == QuantizationMode.SYMMETRIC:
+            return CompressWeightsMode.INT4_SYM
+        if qp.qconfig.num_bits == 8 and qp.qconfig.mode == QuantizationMode.ASYMMETRIC:
+            return CompressWeightsMode.INT8_ASYM
+        if qp.qconfig.num_bits == 8 and qp.qconfig.mode == QuantizationMode.SYMMETRIC:
+            return CompressWeightsMode.INT8_SYM
+
+    def get_wc_config_node_map(self, model, nncf_graph):
+        quantization_setup = self.get_quantization_setup(model, nncf_graph)
+        qps = quantization_setup.quantization_points
+        for _, qp in qps.values():
+            assert len(qp.directly_quantized_operator_node_names) == 1, (
+                "Weights compression does not support shared configs"
+            )
+        qps = {
+            qp.directly_quantized_operator_node_names[0]: TorchAOQuantizerAdapter._get_compression_mode_from_qconfig(qp)
+            for id, qp in qps.items()
+        }
+        return qps
 
     def get_quantization_setup(self, model: torch.fx.GraphModule, nncf_graph: NNCFGraph) -> SingleConfigQuantizerSetup:
         # Save model and nodes meta before the annotation

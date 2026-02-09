@@ -196,13 +196,14 @@ def compress_pt2e(
         preserve the accuracy of the model, the more sensitive layers receive a higher precision.
     :param advanced_parameters: Advanced parameters for algorithms in the compression pipeline.
     """
+    compression_format = nncf.CompressionFormat.DQ
     if isinstance(quantizer, OpenVINOQuantizer) or hasattr(quantizer, "get_nncf_weight_compression_parameters"):
         quantizer = OpenVINOQuantizerAdapter(quantizer)
-        compression_format = nncf.CompressionFormat.DQ
     else:
-        # TODO Support Third party quantizers here.
-        msg = "Only OpenVINO Quantizer is supported currently."
-        raise nncf.InternalError(msg)
+        quantizer = OpenVINOQuantizerAdapter(quantizer)
+        # # TODO Support Third party quantizers here.
+        # msg = "Only OpenVINO Quantizer is supported currently."
+        # raise nncf.InternalError(msg)
 
     sensitivity_metric = (
         (SensitivityMetric.WEIGHT_QUANTIZATION_ERROR if dataset is None else SensitivityMetric.MAX_ACTIVATION_VARIANCE)
