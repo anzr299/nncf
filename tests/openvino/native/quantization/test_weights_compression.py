@@ -12,7 +12,7 @@
 import inspect
 import os
 from collections import defaultdict
-from typing import Callable, Optional
+from typing import Callable
 from unittest.mock import patch
 
 import numpy as np
@@ -37,6 +37,7 @@ from nncf.openvino.optimized_functions import astype
 from nncf.parameters import BackupMode
 from nncf.parameters import CompressionFormat
 from nncf.quantization import compress_weights
+from nncf.quantization.advanced_parameters import AdvancedAdaptiveCodebookParameters as CodebookParams
 from nncf.quantization.advanced_parameters import AdvancedCompressionParameters
 from nncf.quantization.advanced_parameters import AdvancedCompressionParameters as CompressionParams
 from nncf.quantization.advanced_parameters import AdvancedGPTQParameters as GPTQParams
@@ -106,7 +107,7 @@ class LMLinearModel(OVReferenceModel):
     INPUT_SHAPE = [1, 24, HIDDEN_DIM]  # [B, SeqLen, HiddenDim]
 
     def _create_ov_model(
-        self, transpose_b: bool = True, transpose_a: bool = False, input_shape: Optional[list[int]] = None
+        self, transpose_b: bool = True, transpose_a: bool = False, input_shape: list[int] | None = None
     ):
         self._input_shape = self.INPUT_SHAPE if input_shape is None else input_shape
         hdim_axis = -2 if transpose_a else -1
@@ -360,7 +361,14 @@ def check_fp4(op: ov.Node):
 
 
 def get_mixed_mapping(primary_fn: Callable, list_layers: list[str]):
-    mapping = {node_name: check_int8_node for node_name in list_layers}
+    if primary_fn in (check_fp8, check_fp4):
+        backup_fn = check_fp8
+    elif primary_fn in (check_mxfp4, check_mxfp8):
+        backup_fn = check_mxfp8
+    else:
+        backup_fn = check_int8_node
+
+    mapping = {node_name: backup_fn for node_name in list_layers}
     primary_node_name = TEST_MODELS[IntegerModel][0]
     mapping[primary_node_name] = primary_fn
     return mapping
@@ -374,7 +382,7 @@ def get_mixed_mapping(primary_fn: Callable, list_layers: list[str]):
         (CompressWeightsMode.INT4_SYM, 3, get_mixed_mapping(check_int4_sym_grouped, TEST_MODELS[IntegerModel])),
         (CompressWeightsMode.INT4_ASYM, 3, get_mixed_mapping(check_int4_asym_grouped, TEST_MODELS[IntegerModel])),
         (CompressWeightsMode.NF4, 3, get_mixed_mapping(check_nf4_grouped, TEST_MODELS[IntegerModel])),
-        (CompressWeightsMode.CB4_F8E4M3, 3, get_mixed_mapping(check_codebook_grouped, TEST_MODELS[IntegerModel])),
+        (CompressWeightsMode.CB4, 3, get_mixed_mapping(check_codebook_grouped, TEST_MODELS[IntegerModel])),
         (CompressWeightsMode.MXFP4, 32, get_mixed_mapping(check_mxfp4, TEST_MODELS[IntegerModel])),
         (CompressWeightsMode.MXFP8_E4M3, 32, get_mixed_mapping(check_mxfp8, TEST_MODELS[IntegerModel])),
         (CompressWeightsMode.FP8_E4M3, 3, get_mixed_mapping(check_fp8, TEST_MODELS[IntegerModel])),
@@ -384,7 +392,7 @@ def get_mixed_mapping(primary_fn: Callable, list_layers: list[str]):
 def test_compare_compressed_weights(mode, group_size, check_fn_per_node_map):
     model = IntegerModel(
         dim2=group_size if group_size > 0 else 3,
-        dim3=1 if mode in (CompressWeightsMode.MXFP4, CompressWeightsMode.MXFP8_E4M3) else 6,
+        dim3=32 if mode in (CompressWeightsMode.MXFP4, CompressWeightsMode.MXFP8_E4M3) else 6,
         positive_w=False,
     ).ov_model
     compressed_model = compress_weights(model, mode=mode, group_size=group_size)
@@ -1231,6 +1239,7 @@ def test_mixed_precision_mxfp(sensitivity_metric, all_layers, ratio, ref_ids, mo
         all_layers=all_layers,
         sensitivity_metric=sensitivity_metric,
         dataset=dataset,
+        backup_mode=nncf.BackupMode.INT8_ASYM,
         **kwargs,
     )
     ops = []
@@ -1294,6 +1303,7 @@ def test_mixed_precision_fp(sensitivity_metric, all_layers, ratio, ref_ids, mode
         all_layers=all_layers,
         sensitivity_metric=sensitivity_metric,
         dataset=dataset,
+        backup_mode=nncf.BackupMode.INT8_SYM,
         **kwargs,
     )
     ops = []
@@ -1333,7 +1343,7 @@ def test_mixed_precision_codebook(mode, all_layers, ratio, ref_ids):
     model = SequentialMatmulModel().ov_model
     compressed_model = compress_weights(
         model,
-        mode=CompressWeightsMode.CB4_F8E4M3,
+        mode=CompressWeightsMode.CB4,
         ratio=ratio,
         group_size=1,
         all_layers=all_layers,
@@ -1892,6 +1902,58 @@ def test_data_based_compression_with_backup_mode(backup_mode, params, num_compre
     assert act_num == num_compressed
 
 
+@pytest.mark.parametrize(
+    (
+        "compress_mode",
+        "backup_mode",
+        "num_compressed",
+        "scale_type",
+    ),
+    [
+        # FP4
+        (CompressWeightsMode.FP4, BackupMode.NONE, 3, ov.Type.f16),
+        (CompressWeightsMode.FP4, BackupMode.FP8_E4M3, 3, ov.Type.f16),
+        (CompressWeightsMode.FP4, None, 3, ov.Type.f16),
+        # MXFP4
+        (CompressWeightsMode.MXFP4, BackupMode.NONE, 3, ov.Type.f8e8m0),
+        (CompressWeightsMode.MXFP4, BackupMode.MXFP8_E4M3, 3, ov.Type.f8e8m0),
+        (CompressWeightsMode.MXFP4, None, 3, ov.Type.f8e8m0),
+    ],
+)
+def test_fp4_compression_with_backup_mode(
+    compress_mode,
+    backup_mode,
+    num_compressed,
+    scale_type,
+):
+    model = SequentialMatmulModel(mm_hidden_dim=32).ov_model
+
+    compressed_model = compress_weights(
+        model,
+        mode=compress_mode,
+        ratio=0.8,
+        group_size=32,
+        backup_mode=backup_mode,
+    )
+
+    backup_ov_type = ov.Type.f32 if backup_mode == BackupMode.NONE else ov.Type.f8e4m3
+    act_num = 0
+    for op in compressed_model.get_ops():
+        if op.get_type_name() != "Constant":
+            continue
+
+        if op.get_element_type() == ov.Type.f4e2m1:
+            act_num += 1
+        elif "/scale" in op.get_friendly_name():
+            assert op.get_element_type() == scale_type
+        elif "Constant_" in op.get_friendly_name():
+            continue
+        else:
+            assert op.get_element_type() == backup_ov_type
+
+    assert act_num == num_compressed
+
+
 def test_awq_fp16_overflow_fix(mocker):
     """
     Special model with low magnitude activations for testing the fix for overflow in AWQ fp16 quantization.
@@ -2147,6 +2209,39 @@ def test_codebook_is_correct_array(codebook):
         )
 
 
+@pytest.mark.parametrize("value_type", [None, TensorDataType.float16, TensorDataType.f8e4m3, TensorDataType.int8])
+@pytest.mark.parametrize("group_size", [-1, 4])
+def test_adaptive_codebooks(value_type, group_size):
+    model = AWQMatmulModel().ov_model
+    dataset = Dataset([np.ones([1, 8, 8])])
+    advanced_parameters = (
+        CompressionParams()
+        if value_type is None
+        else CompressionParams(adaptive_codebook_params=CodebookParams(value_type=value_type))
+    )
+
+    n_matmuls = 0
+    for op in model.get_ordered_ops():
+        if op.get_type_name() == "MatMul":
+            n_matmuls += 1
+
+    compressed_model = compress_weights(
+        model,
+        mode=CompressWeightsMode.ADAPTIVE_CODEBOOK,
+        group_size=group_size,
+        dataset=dataset,
+        advanced_parameters=advanced_parameters,
+    )
+
+    n_gathers = 0
+    for op in compressed_model.get_ordered_ops():
+        if op.get_type_name() == "Gather":
+            n_gathers += 1
+
+    # For each MatMul except lm_head, there should be one Gather operation to fetch from the codebook
+    assert n_gathers == n_matmuls - 1
+
+
 class TestOVTemplateWeightCompression(TemplateWeightCompression):
     @staticmethod
     def get_matmul_model() -> ov.Model:
@@ -2364,61 +2459,6 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
                 ]
             ),
         )[check_sampling_activation_stats_flow]
-
-    @pytest.mark.parametrize("is_moe", [False, pytest.param(True, marks=pytest.mark.xfail(reason="Ticket - 176465"))])
-    @pytest.mark.parametrize("check_sampling_activation_stats_flow", [False, True])
-    def test_scale_estimation(self, mocker, is_moe, check_sampling_activation_stats_flow):
-        return super().test_scale_estimation(mocker, is_moe, check_sampling_activation_stats_flow)
-
-    @pytest.mark.parametrize(
-        "is_3d_weights", [False, pytest.param(True, marks=pytest.mark.xfail(reason="Ticket - 176465"))]
-    )
-    def test_awq_with_ignored_scope(self, mocker, is_3d_weights):
-        return super().test_awq_with_ignored_scope(mocker, is_3d_weights)
-
-    # Transpose inputs does not affect mergable pattern code, skippting (True, False)
-    @pytest.mark.parametrize("transpose_a,non_mergable_pattern", [(True, True), (False, True), (False, False)])
-    @pytest.mark.parametrize(
-        "is_3d_weights", [False, pytest.param(True, marks=pytest.mark.xfail(reason="Ticket - 176465"))]
-    )
-    def test_awq_scale_reference(
-        self,
-        non_mergable_pattern,
-        transpose_a,
-        test_awq_scale_ref,
-        transpose_a_supported,
-        is_3d_weights,
-        monkeypatch,
-        mocker,
-    ):
-        return super().test_awq_scale_reference(
-            non_mergable_pattern,
-            transpose_a,
-            test_awq_scale_ref,
-            transpose_a_supported,
-            is_3d_weights,
-            monkeypatch,
-            mocker,
-        )
-
-    @pytest.mark.parametrize(
-        "is_3d_weights", [False, pytest.param(True, marks=pytest.mark.xfail(reason="Ticket - 176465"))]
-    )
-    @pytest.mark.parametrize("dataset", [None, np.ones([2, 8, 8], dtype=np.float32)])
-    @pytest.mark.parametrize("prefer_data_aware_scaling", [True, False])
-    def test_data_free_awq(self, dataset, prefer_data_aware_scaling, is_3d_weights, mocker):
-        return super().test_data_free_awq(dataset, prefer_data_aware_scaling, is_3d_weights, mocker)
-
-    @pytest.mark.parametrize(
-        "is_3d_weights", [False, pytest.param(True, marks=pytest.mark.xfail(reason="Ticket - 176465"))]
-    )
-    @pytest.mark.parametrize("with_multiply", (True, False))
-    def test_call_max_var_criterion_with_dataset_by_default_awq_act_matmul(
-        self, int4_mode, with_multiply, is_3d_weights, mocker
-    ):
-        return super().test_call_max_var_criterion_with_dataset_by_default_awq_act_matmul(
-            int4_mode, with_multiply, is_3d_weights, mocker
-        )
 
     @staticmethod
     def get_orig_weight(model: ov.Model) -> Tensor:
