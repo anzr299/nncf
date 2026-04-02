@@ -95,6 +95,13 @@ class CompressWeightsMode(StrEnum):
     :param FP4: A FP4 format with E2M1 values sharing group-level fp16 scale.
     :param NVFP4: A FP4 format with E2M1 values sharing group-level E4M3 scale and FP32 per weight scale.
         The size of group is 16.
+    :param INT2_SYM: Q2_K-style double compression 2-bit symmetric quantization. Weights are quantized to 2-bit
+        integers with an int4 scale per 16 weights and an fp16 super-scale (d) per 128 weights.
+        Dequantization: d * sc * q.
+    :param INT2_ASYM: Double compression 2-bit asymmetric quantization.
+        Weights are quantized to 2-bit unsigned integers with uint4 scale and uint4 zero point per 16 weights,
+        and fp16 super block scale (d) per 128 weights.
+        Dequantization: (q * sc - zp) * d.
     :param CODEBOOK: Codebook (LUT) quantization format.
     :param ADAPTIVE_CODEBOOK: Adaptive codebook (LUT) quantization format.
     :param CB4: Codebook (LUT) format with 16 fixed fp8 values in E4M3 format.
@@ -111,6 +118,8 @@ class CompressWeightsMode(StrEnum):
     FP8_E4M3 = "fp8_e4m3"
     FP4 = "fp4"
     NVFP4 = "nvfp4"
+    INT2_SYM = "int2_sym"
+    INT2_ASYM = "int2_asym"
     CODEBOOK = "codebook"
     ADAPTIVE_CODEBOOK = "adaptive_codebook"
 

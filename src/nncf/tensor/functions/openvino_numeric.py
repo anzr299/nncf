@@ -39,6 +39,8 @@ DTYPE_MAP: dict[TensorDataType, ov.Type] = {
     TensorDataType.uint8: ov.Type.u8,
     TensorDataType.uint4: ov.Type.u4,
     TensorDataType.int4: ov.Type.i4,
+    TensorDataType.uint2: ov.Type.u4,
+    TensorDataType.int2: ov.Type.i4,
 }
 
 NATIVE_OV_CAST_DTYPES = [
@@ -53,6 +55,10 @@ NATIVE_OV_CAST_DTYPES = [
 ]
 
 DTYPE_MAP_REV = {v: k for k, v in DTYPE_MAP.items()}
+# uint2/int2 share ov.Type.u4/i4 with uint4/int4 (no native ov 2-bit types).
+# Restore the canonical reverse mapping so existing INT4 code is not broken.
+DTYPE_MAP_REV[ov.Type.u4] = TensorDataType.uint4
+DTYPE_MAP_REV[ov.Type.i4] = TensorDataType.int4
 
 
 def from_numpy(a: NDArray[Any]) -> ov.Tensor:

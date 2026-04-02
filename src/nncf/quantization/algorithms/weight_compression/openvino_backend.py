@@ -241,6 +241,12 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
             scale_dtype = ov.Type.f8e8m0
         elif compression_config.mode == CompressWeightsMode.NVFP4:
             scale_dtype = ov.Type.f8e4m3
+        elif compression_config.mode == CompressWeightsMode.INT2_SYM:
+            scale_dtype = ov.Type.i4
+        elif compression_config.mode == CompressWeightsMode.INT2_ASYM:
+            scale_dtype = ov.Type.u4
+
+        is_q2k_style = compression_config.mode in [CompressWeightsMode.INT2_SYM, CompressWeightsMode.INT2_ASYM]
 
         if compression_config.is_codebook:
             converted_const = create_ov_codebook_subgraph(
@@ -250,6 +256,43 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
                 indexes=compressed_weight.tensor,
                 dtype=compression_dtype,
                 name=const_node_name,
+            )
+        elif is_q2k_style:
+            # INT2 double compression subgraph
+            compressed_const = create_ov_const_from_tensor(
+                compressed_weight.tensor, compression_dtype, name=const_node_name
+            )
+            converted_const = opset.convert(compressed_const, ov.Type.f16)
+
+            # Inner scale: sc (uint4/int4) -> f16
+            scale_const = create_ov_const_from_tensor(
+                compressed_weight.scale, scale_dtype, name=f"{const_node_name}/scale"
+            )
+            scale_const = convert_op(scale_const, ov.Type.f16)
+
+            # Multiply: q * sc
+            mul = opset.multiply(
+                converted_const,
+                scale_const,
+                name=f"{const_node_name}/fq_weights_{weight_port_id}",
+            )
+
+            # ASYM: (q * sc - zp) * d
+            if compressed_weight.zero_point is not None:
+                zp_const = create_ov_const_from_tensor(
+                    compressed_weight.zero_point, compression_dtype, name=f"{const_node_name}/zero_point"
+                )
+                zp_const = convert_op(zp_const, ov.Type.f16)
+                mul = opset.subtract(mul, zp_const, name=f"{const_node_name}/zero_point/subtract")
+
+            # Super block scale: d (fp16)
+            super_scale = create_ov_const_from_tensor(
+                compressed_weight.global_scale, ov.Type.f16, name=f"{const_node_name}/super_block_scale"
+            )
+            mul = opset.multiply(
+                mul,
+                super_scale,
+                name=f"{const_node_name}/super_scale_{weight_port_id}",
             )
         else:
             compressed_const = create_ov_const_from_tensor(
@@ -266,27 +309,29 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
                     converted_const, zero_point_const, name=f"{const_node_name}/zero_point/subtract"
                 )
 
-        scale_const = create_ov_const_from_tensor(compressed_weight.scale, scale_dtype, name=f"{const_node_name}/scale")
-
-        if compressed_weight.global_scale is not None:
-            sec_order_scale = create_ov_const_from_tensor(
-                compressed_weight.global_scale, ov.Type.f32, name=f"{const_node_name}/second_order_scale"
+            scale_const = create_ov_const_from_tensor(
+                compressed_weight.scale, scale_dtype, name=f"{const_node_name}/scale"
             )
-            scale_const = convert_op(scale_const, ov.Type.f32)
 
-            scale_const = opset.multiply(
+            if compressed_weight.global_scale is not None:
+                sec_order_scale = create_ov_const_from_tensor(
+                    compressed_weight.global_scale, ov.Type.f32, name=f"{const_node_name}/second_order_scale"
+                )
+                scale_const = convert_op(scale_const, ov.Type.f32)
+
+                scale_const = opset.multiply(
+                    scale_const,
+                    sec_order_scale,
+                    name=f"{const_node_name}/dequantized_scale_{weight_port_id}",
+                )
+
+            scale_const = convert_op(scale_const, ov.Type.f16)
+
+            mul = opset.multiply(
+                converted_const,
                 scale_const,
-                sec_order_scale,
-                name=f"{const_node_name}/dequantized_scale_{weight_port_id}",
+                name=f"{const_node_name}/fq_weights_{weight_port_id}",
             )
-
-        scale_const = convert_op(scale_const, ov.Type.f16)
-
-        mul = opset.multiply(
-            converted_const,
-            scale_const,
-            name=f"{const_node_name}/fq_weights_{weight_port_id}",
-        )
 
         if compression_config.group_size != -1:
             mul = opset.reshape(mul, output_shape=original_shape, special_zero=False)

@@ -63,6 +63,7 @@ from tests.cross_fw.shared.comparator import compare_stats
 from tests.cross_fw.shared.json import dump_to_json
 from tests.cross_fw.shared.json import load_json
 from tests.cross_fw.test_templates.template_test_weights_compression import ACTIVATION
+from tests.cross_fw.test_templates.template_test_weights_compression import TemplateINT2DoubleCompression
 from tests.cross_fw.test_templates.template_test_weights_compression import TemplateWeightCompression
 from tests.openvino.native.common import get_actual_reference_for_current_openvino
 from tests.openvino.native.models import AWQActMatmulModel
@@ -385,6 +386,83 @@ def check_fp4(op: ov.Node):
 
 def check_nvfp4(op: ov.Node):
     return check_fp(op, mode=CompressWeightsMode.NVFP4, group_size=16)
+
+
+def check_int2_double_compression(op: ov.Node, mode: CompressWeightsMode, group_size: int = 16):
+    """Validates the OV subgraph structure for INT2 double compression.
+
+    Expected structure:
+      SYM:  weights (i4) -> Convert(f16) -> Multiply(Convert(i4_sc, f16)) -> Multiply(fp16_d) -> Reshape -> Convert
+      ASYM: weights (u4) -> Convert(f16) -> Multiply(Convert(u4_sc, f16)) -> Subtract(Convert(u4_zp, f16))
+                          -> Multiply(fp16_d) -> Reshape -> Convert
+    """
+    dtype = ov.Type.u4 if mode == CompressWeightsMode.INT2_ASYM else ov.Type.i4
+    assert op.get_element_type() == dtype
+
+    compressed_weight = astype(Tensor(op.get_tensor_view()), TensorDataType.float16)
+    stats = {"compressed_weight": compressed_weight.as_numpy_tensor().data}
+
+    weight_shape = op.shape
+    assert list(weight_shape)[-1] == group_size
+    reduced_weight_shape = list(weight_shape)
+    reduced_weight_shape[-1] = 1
+
+    convert_node = get_next_node(op)
+    assert convert_node.get_type_name() == "Convert"
+
+    # First Multiply: q * sc
+    mul_node = get_next_node(convert_node)
+    assert mul_node.get_type_name() == "Multiply"
+
+    # The scale input: Convert(int4_scale, f16)
+    scale_convert = get_prev_node(mul_node, [1])
+    if scale_convert.get_type_name() == "Convert":
+        inner_scale_node = scale_convert.input_value(0).get_node()
+    else:
+        inner_scale_node = scale_convert
+    stats["scale"] = get_const_value_as_numpy_tensor(inner_scale_node)
+    stats["scale_element_type"] = inner_scale_node.get_element_type()
+
+    next_node = mul_node
+
+    if mode == CompressWeightsMode.INT2_ASYM:
+        # ASYM: Subtract(Convert(u4_zp, f16)) comes after first Multiply
+        sub_node = get_next_node(mul_node)
+        assert sub_node.get_type_name() == "Subtract"
+
+        # The zero_point input: Convert(u4_zp, f16)
+        zp_convert = get_prev_node(sub_node, [1])
+        if zp_convert.get_type_name() == "Convert":
+            zp_node = zp_convert.input_value(0).get_node()
+        else:
+            zp_node = zp_convert
+        stats["zero_point"] = get_const_value_as_numpy_tensor(zp_node)
+        stats["zero_point_element_type"] = zp_node.get_element_type()
+
+        next_node = sub_node
+
+    # Second Multiply: * d (super block scale, fp16)
+    super_mul_node = get_next_node(next_node)
+    assert super_mul_node.get_type_name() == "Multiply"
+
+    super_scale_node = get_prev_node(super_mul_node, [1])
+    stats["global_scale"] = get_const_value_as_numpy_tensor(super_scale_node)
+
+    reshape_node = get_next_node(super_mul_node)
+    assert reshape_node.get_type_name() == "Reshape"
+
+    convert_node = get_next_node(reshape_node)
+    assert convert_node.get_type_name() == "Convert"
+
+    return stats
+
+
+def check_int2_sym_double_compression(op: ov.Node):
+    return check_int2_double_compression(op, mode=CompressWeightsMode.INT2_SYM)
+
+
+def check_int2_asym_double_compression(op: ov.Node):
+    return check_int2_double_compression(op, mode=CompressWeightsMode.INT2_ASYM)
 
 
 def get_mixed_mapping(primary_fn: Callable, list_layers: list[str]):
@@ -2766,3 +2844,104 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
             group_size=-1,
         )
         assert self.get_num_int8_nodes(compressed_model) == 0
+
+
+class INT2DoubleCompressionLinearModel(OVReferenceModel):
+    """A simple single-matmul model with weight dimensions divisible by 128 for INT2 double compression tests."""
+
+    INPUT_DIM = 256
+    OUTPUT_DIM = 64
+
+    def _create_ov_model(self):
+        input_node = opset.parameter([1, 8, self.INPUT_DIM], dtype=ov.Type.f32, name="Input")
+        weights_data = self._rng.random((self.OUTPUT_DIM, self.INPUT_DIM)).astype(np.float32)
+        weights_node = opset.constant(weights_data, dtype=np.float32, name="Weights")
+        matmul_node = opset.matmul(input_node, weights_node, transpose_a=False, transpose_b=True, name="MatMul")
+        result = opset.result(matmul_node, name="Result")
+        result.get_output_tensor(0).set_names(set(["Result"]))
+        return ov.Model([result], [input_node])
+
+
+class TestOVINT2DoubleCompression(TemplateINT2DoubleCompression):
+    """OV-specific tests for INT2 double compression weight compression."""
+
+    @staticmethod
+    def _get_int2_test_model() -> ov.Model:
+        return INT2DoubleCompressionLinearModel().ov_model
+
+    @pytest.mark.parametrize(
+        ("mode", "check_fn"),
+        [
+            (CompressWeightsMode.INT2_SYM, check_int2_sym_double_compression),
+            (CompressWeightsMode.INT2_ASYM, check_int2_asym_double_compression),
+        ],
+    )
+    def test_int2_ov_subgraph_structure(self, mode: CompressWeightsMode, check_fn: Callable) -> None:
+        """Verify the OV compressed model has the correct subgraph for INT2 double compression."""
+        model = INT2DoubleCompressionLinearModel().ov_model
+        compressed_model = compress_weights(model, mode=mode, group_size=16, all_layers=True)
+
+        found_weight = False
+        for op in compressed_model.get_ops():
+            if op.get_type_name() == "Constant" and op.get_friendly_name() == "Weights":
+                stats = check_fn(op)
+                found_weight = True
+
+                # Verify scale element type is int4 (sym) or uint4 (asym)
+                expected_scale_type = ov.Type.i4 if mode == CompressWeightsMode.INT2_SYM else ov.Type.u4
+                assert stats["scale_element_type"] == expected_scale_type
+
+                # Verify global_scale (d) exists and is non-zero
+                gs = stats["global_scale"]
+                assert gs is not None
+                assert np.any(gs != 0), "Global scale (d) should be non-zero"
+
+                # For asymmetric, verify zero_point (uint4)
+                if mode == CompressWeightsMode.INT2_ASYM:
+                    assert "zero_point" in stats
+                    assert stats["zero_point_element_type"] == ov.Type.u4
+
+                break
+
+        assert found_weight, "Did not find the compressed 'Weights' constant in the model"
+
+    @pytest.mark.parametrize("mode", [CompressWeightsMode.INT2_SYM, CompressWeightsMode.INT2_ASYM])
+    def test_int2_ov_compressed_weight_dtype(self, mode: CompressWeightsMode) -> None:
+        """Verify compressed weights use i4 (sym) or u4 (asym) element type in OV."""
+        model = INT2DoubleCompressionLinearModel().ov_model
+        compressed_model = compress_weights(model, mode=mode, group_size=16, all_layers=True)
+        expected_dtype = ov.Type.i4 if mode == CompressWeightsMode.INT2_SYM else ov.Type.u4
+
+        for op in compressed_model.get_ops():
+            if op.get_type_name() == "Constant" and op.get_friendly_name() == "Weights":
+                assert op.get_element_type() == expected_dtype
+                break
+
+    @pytest.mark.parametrize("mode", [CompressWeightsMode.INT2_SYM, CompressWeightsMode.INT2_ASYM])
+    def test_int2_ov_output_shape_preserved(self, mode: CompressWeightsMode) -> None:
+        """Compressed model should produce the same output shape as the original."""
+        model = INT2DoubleCompressionLinearModel().ov_model
+        input_data = np.random.default_rng(42).random((1, 8, 256)).astype(np.float32)
+
+        compiled_orig = ov.compile_model(model, device_name="CPU")
+        orig_out = compiled_orig(input_data)[0]
+
+        compressed_model = compress_weights(model, mode=mode, group_size=16, all_layers=True)
+        compiled_compressed = ov.compile_model(compressed_model, device_name="CPU")
+        compressed_out = compiled_compressed(input_data)[0]
+
+        assert orig_out.shape == compressed_out.shape, "Output shapes must match after INT2 compression"
+
+    @pytest.mark.parametrize("mode", [CompressWeightsMode.INT2_SYM, CompressWeightsMode.INT2_ASYM])
+    def test_int2_ov_weight_shape_grouped(self, mode: CompressWeightsMode) -> None:
+        """Weights in the compressed model should be reshaped for group_size=16."""
+        model = INT2DoubleCompressionLinearModel().ov_model
+        compressed_model = compress_weights(model, mode=mode, group_size=16, all_layers=True)
+
+        for op in compressed_model.get_ops():
+            if op.get_type_name() == "Constant" and op.get_friendly_name() == "Weights":
+                shape = list(op.shape)
+                # Original shape [64, 256] -> grouped [64, 16, 16]
+                assert shape[-1] == 16, f"Last dim should be group_size=16, got {shape[-1]}"
+                assert shape[-2] == 16, f"Second-to-last dim should be 256/16=16, got {shape[-2]}"
+                break

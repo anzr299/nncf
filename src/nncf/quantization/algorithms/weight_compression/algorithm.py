@@ -94,7 +94,7 @@ def get_weight_compression_configuration(
     elif group_size is None and mode in NON_INT8_MODES:
         if mode in [CompressWeightsMode.MXFP4, CompressWeightsMode.MXFP8_E4M3]:
             group_size = 32
-        elif mode == CompressWeightsMode.NVFP4:
+        elif mode == CompressWeightsMode.NVFP4 or mode in [CompressWeightsMode.INT2_SYM, CompressWeightsMode.INT2_ASYM]:
             group_size = 16
         elif mode in [
             CompressWeightsMode.CODEBOOK,
@@ -289,6 +289,18 @@ def check_user_compression_configuration(
         if advanced_parameters and advanced_parameters.group_size_fallback_mode is GroupSizeFallbackMode.ADJUST:
             msg = (
                 "MXFP4, MXFP8_E4M3 and NVFP4 types do not support the group size"
+                f" fallback mode {advanced_parameters.group_size_fallback_mode.value}."
+                " Please use other group size fallback mode."
+            )
+            raise nncf.ValidationError(msg)
+
+    if mode in [CompressWeightsMode.INT2_SYM, CompressWeightsMode.INT2_ASYM]:
+        if group_size not in [None, 16]:
+            msg = f"INT2 double compression modes only support group size of 16, group size of {group_size} is given."
+            raise nncf.ValidationError(msg)
+        if advanced_parameters and advanced_parameters.group_size_fallback_mode is GroupSizeFallbackMode.ADJUST:
+            msg = (
+                "INT2 double compression modes do not support the group size"
                 f" fallback mode {advanced_parameters.group_size_fallback_mode.value}."
                 " Please use other group size fallback mode."
             )

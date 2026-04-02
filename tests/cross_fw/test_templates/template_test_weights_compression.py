@@ -40,6 +40,8 @@ from nncf.quantization.algorithms.weight_compression.config import WeightCompres
 from nncf.quantization.algorithms.weight_compression.constants import CB4_QUANTILES
 from nncf.quantization.algorithms.weight_compression.mixed_precision import MIXED_PRECISION_CRITERIA
 from nncf.quantization.algorithms.weight_compression.scale_estimation import ScaleEstimation
+from nncf.quantization.algorithms.weight_compression.weight_lowering import do_int2_double_compression_dequantization
+from nncf.quantization.algorithms.weight_compression.weight_lowering import do_int2_double_compression_quantization
 from nncf.quantization.algorithms.weight_compression.weight_lowering import integer_quantize_dequantize_weight
 from nncf.scopes import IgnoredScope
 from nncf.tensor import Tensor
@@ -57,6 +59,7 @@ HESSIAN_TRACE = (16 + 1 + 4) * 2 / 9  # sum(i*i for i in NON_ZERO_ROW) * 2 / ACT
 MAX_BASELINE_SCORE = 1 / 1.1920928955078125e-07
 
 INT4_MODES = (CompressWeightsMode.INT4_SYM, CompressWeightsMode.INT4_ASYM)
+INT2_MODES = (CompressWeightsMode.INT2_SYM, CompressWeightsMode.INT2_ASYM)
 
 
 def get_relative_error(weight_1: Tensor, weight_2: Tensor, axis: int = 0) -> Tensor:
@@ -948,3 +951,172 @@ class TemplateWeightCompression(ABC):
                 all_layers=True,
                 **kwargs,
             )
+
+
+class TemplateINT2DoubleCompression:
+    """
+    Cross-framework template tests for INT2 double compression weight compression.
+    Tests the quantization math, config properties, and round-trip accuracy.
+    """
+
+    @pytest.mark.parametrize("mode", INT2_MODES)
+    def test_int2_config_num_bits(self, mode: CompressWeightsMode) -> None:
+        config = WeightCompressionConfig(mode=mode, group_size=16)
+        assert config.num_bits == 2
+
+    @pytest.mark.parametrize("mode", INT2_MODES)
+    def test_int2_config_is_integer(self, mode: CompressWeightsMode) -> None:
+        config = WeightCompressionConfig(mode=mode, group_size=16)
+        assert config.is_integer
+
+    def test_int2_sym_config_is_not_asym(self) -> None:
+        config = WeightCompressionConfig(mode=CompressWeightsMode.INT2_SYM, group_size=16)
+        assert not config.is_asym_mode
+
+    def test_int2_asym_config_is_asym(self) -> None:
+        config = WeightCompressionConfig(mode=CompressWeightsMode.INT2_ASYM, group_size=16)
+        assert config.is_asym_mode
+
+    @pytest.mark.parametrize(
+        ("mode", "expected_dtype"),
+        [
+            (CompressWeightsMode.INT2_SYM, TensorDataType.int4),
+            (CompressWeightsMode.INT2_ASYM, TensorDataType.uint4),
+        ],
+    )
+    def test_int2_compression_dtype(self, mode: CompressWeightsMode, expected_dtype: TensorDataType) -> None:
+        config = WeightCompressionConfig(mode=mode, group_size=16)
+        assert config.compression_dtype == expected_dtype
+
+    @pytest.mark.parametrize("mode", INT2_MODES)
+    def test_int2_double_compression_quantization_shapes(self, mode: CompressWeightsMode) -> None:
+        """Verifies quantized weight, scale, and global_scale shapes for a [4, 256] weight."""
+        rng = np.random.default_rng(42)
+        weight = Tensor(rng.standard_normal((4, 256)).astype(np.float32))
+        config = WeightCompressionConfig(mode=mode, group_size=16)
+        reduction_axes = (1,)
+
+        compressed = do_int2_double_compression_quantization(weight, config, reduction_axes)
+
+        # weight is [4, 256] -> grouped to [4, 16, 16] (16 inner groups of 16 weights)
+        assert compressed.tensor.shape == (4, 16, 16)
+        # int4 scale: one per inner group -> [4, 16, 1]
+        assert compressed.scale.shape == (4, 16, 1)
+        # fp16 global_scale (d): expanded to same shape as scale -> [4, 16, 1]
+        assert compressed.global_scale.shape == (4, 16, 1)
+        assert compressed.global_scale.dtype == TensorDataType.float16
+
+        if mode == CompressWeightsMode.INT2_ASYM:
+            # ASYM: uint4 scale [0,15], uint4 zero_point [0,15], no global_zero_point
+            assert compressed.scale.dtype == TensorDataType.uint8
+            assert compressed.zero_point is not None
+            assert compressed.zero_point.shape == (4, 16, 1)
+            assert compressed.zero_point.dtype == TensorDataType.uint8
+            assert compressed.global_zero_point is None
+        else:
+            # SYM: int4 scale [-8,7], no zero_point, no global_zero_point
+            assert compressed.scale.dtype == TensorDataType.int8
+            assert compressed.zero_point is None
+            assert compressed.global_zero_point is None
+
+    def test_int2_sym_quantized_weight_range(self) -> None:
+        """INT2 symmetric weights must be in [-2, 1]."""
+        rng = np.random.default_rng(42)
+        weight = Tensor(rng.standard_normal((4, 256)).astype(np.float32))
+        config = WeightCompressionConfig(mode=CompressWeightsMode.INT2_SYM, group_size=16)
+
+        compressed = do_int2_double_compression_quantization(weight, config, reduction_axes=(1,))
+        w_np = compressed.tensor.data
+        if hasattr(w_np, "numpy"):
+            w_np = w_np.numpy()
+        w_np = np.array(w_np, dtype=np.float32)
+        assert np.all(w_np >= -2) and np.all(w_np <= 1)
+
+    def test_int2_asym_quantized_weight_range(self) -> None:
+        """INT2 asymmetric weights must be in [0, 3]."""
+        rng = np.random.default_rng(42)
+        weight = Tensor(rng.standard_normal((4, 256)).astype(np.float32))
+        config = WeightCompressionConfig(mode=CompressWeightsMode.INT2_ASYM, group_size=16)
+
+        compressed = do_int2_double_compression_quantization(weight, config, reduction_axes=(1,))
+        w_np = compressed.tensor.data
+        if hasattr(w_np, "numpy"):
+            w_np = w_np.numpy()
+        w_np = np.array(w_np, dtype=np.float32)
+        assert np.all(w_np >= 0) and np.all(w_np <= 3)
+
+    @pytest.mark.parametrize("mode", INT2_MODES)
+    def test_int2_double_compression_round_trip(self, mode: CompressWeightsMode) -> None:
+        """Verifies quantize -> dequantize round-trip produces a result that matches
+        the formula: (q * sc - zp) * d (asym) or d * sc * q (sym)."""
+        rng = np.random.default_rng(123)
+        weight = Tensor(rng.standard_normal((4, 256)).astype(np.float32))
+        config = WeightCompressionConfig(mode=mode, group_size=16)
+        reduction_axes = (1,)
+
+        compressed = do_int2_double_compression_quantization(weight, config, reduction_axes)
+        decompressed = do_int2_double_compression_dequantization(compressed, reduction_axis=1)
+
+        # Manually compute the expected dequantization
+        w_q = compressed.tensor.astype(TensorDataType.float32)
+        sc = compressed.scale.astype(TensorDataType.float32)
+        d = compressed.global_scale.astype(TensorDataType.float32)
+
+        if compressed.zero_point is not None:
+            # ASYM: w = (q * sc - zp) * d
+            zp = compressed.zero_point.astype(TensorDataType.float32)
+            manual = (w_q * sc - zp) * d
+        else:
+            # SYM: w = d * sc * q
+            manual = w_q * sc * d
+
+        # The manual result is [4, 16, 16], need to reshape to [4, 256]
+        manual_flat = manual.reshape((4, 256))
+        assert fns.allclose(decompressed, manual_flat, atol=1e-4)
+
+    @pytest.mark.parametrize("mode", INT2_MODES)
+    def test_int2_double_compression_not_all_zeros(self, mode: CompressWeightsMode) -> None:
+        """The decompressed output should not be all zeros for non-zero input."""
+        rng = np.random.default_rng(42)
+        weight = Tensor(rng.standard_normal((4, 256)).astype(np.float32))
+        config = WeightCompressionConfig(mode=mode, group_size=16)
+
+        compressed = do_int2_double_compression_quantization(weight, config, reduction_axes=(1,))
+        decompressed = do_int2_double_compression_dequantization(compressed, reduction_axis=1)
+
+        assert not fns.allclose(decompressed, Tensor(np.zeros_like(decompressed.data)))
+
+    def test_int2_scale_int4_range(self) -> None:
+        """SYM inner scales must be valid int4 values in [-8, 7]."""
+        rng = np.random.default_rng(42)
+        weight = Tensor(rng.standard_normal((4, 256)).astype(np.float32))
+        config = WeightCompressionConfig(mode=CompressWeightsMode.INT2_SYM, group_size=16)
+
+        compressed = do_int2_double_compression_quantization(weight, config, reduction_axes=(1,))
+        s_np = compressed.scale.data
+        if hasattr(s_np, "numpy"):
+            s_np = s_np.numpy()
+        s_np = np.array(s_np, dtype=np.float32)
+        assert np.all(s_np >= -8) and np.all(s_np <= 7)
+
+    @pytest.mark.parametrize("mode", INT2_MODES)
+    def test_int2_compress_weights_end_to_end(self, mode: CompressWeightsMode) -> None:
+        """compress_weights should accept INT2 modes and produce a model without error."""
+        model = self._get_int2_test_model()
+        compressed_model = compress_weights(model, mode=mode, group_size=16, all_layers=True)
+        assert compressed_model is not None
+
+    def test_int2_validation_rejects_wrong_group_size(self) -> None:
+        """INT2 modes only accept group_size=16."""
+        with pytest.raises(nncf.ValidationError):
+            compress_weights(
+                self._get_int2_test_model(),
+                mode=CompressWeightsMode.INT2_SYM,
+                group_size=32,
+            )
+
+    @staticmethod
+    @abstractmethod
+    def _get_int2_test_model() -> TModel:
+        """Returns a backend model suitable for INT2 double compression tests.
+        The weight dimensions must be divisible by 128 (16 inner group size * 8 outer group size)."""

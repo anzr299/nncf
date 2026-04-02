@@ -26,6 +26,8 @@ class CompressedWeight:
         in the non-compression realm. Applicable for INT quantization.
     :param codebook: The codebook (LUT) for the weight compression. Applicable for vector quantization
     :param global_scale: The tensor-wide (global) scaling factor used in two-level scaling schemes such as NVFP4.
+    :param global_zero_point: The tensor-wide (global) zero-point scaling factor used in two-level scaling
+        schemes (e.g. Q2_K-style double compression). May be None when not applicable.
     """
 
     tensor: Tensor | None = None
@@ -33,6 +35,7 @@ class CompressedWeight:
     zero_point: Tensor | None = None
     codebook: Tensor | None = None
     global_scale: Tensor | None = None
+    global_zero_point: Tensor | None = None
 
     def get_unscaled_tensor(self) -> Tensor | None:
         """
