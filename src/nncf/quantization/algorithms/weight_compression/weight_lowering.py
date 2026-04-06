@@ -386,19 +386,9 @@ def do_int2_double_compression_quantization(
 ) -> CompressedWeight:
     """
     Performs double compression 2-bit integer quantization.
-
-    Inner level: 2-bit weights with uint4 scale (and uint4 zero_point for asym) per group of 16 weights.
-    Outer level: fp16 super_block_scale (d) shared across 8 inner groups (128 weights).
-
     Dequantization formula:
-        SYM:  weight = d * sc * q
-        ASYM: weight = (q * sc - zp) * d
-
-    :param weight: The weight tensor to quantize.
-    :param config: The weight compression configuration (must be INT2_SYM or INT2_ASYM).
-    :param reduction_axes: Axes along which to reduce (collect) statistics.
-    :return: CompressedWeight with tensor, scale (uint4/int4), zero_point (uint4, asym only),
-             and global_scale (fp16 d).
+        SYM:  weight = (quantized_weight * inner_scale) * global_scale
+        ASYM: weight = (quantized_weight * inner_scale - zero_point) * global_scale
     """
     if config.mode not in INT2_MODES:
         msg = f"do_int2_double_compression_quantization only supports INT2_SYM/INT2_ASYM, got {config.mode}"
@@ -412,14 +402,11 @@ def do_int2_double_compression_quantization(
     if weight.dtype != TensorDataType.float32:
         weight = weight.astype(TensorDataType.float32)
 
-    # Step 1: Reshape weight for inner groups of 16
     weight_grouped, reduction_axis = reshape_weight_for_grouped_quantization(weight, reduction_axes, inner_group_size)
 
     eps = fns.finfo(weight).eps
 
     if is_asym:
-        # --- ASYM path ---
-        # Per-group min/max
         min_vals = fns.min(weight_grouped, axis=reduction_axis, keepdims=True)
         max_vals = fns.max(weight_grouped, axis=reduction_axis, keepdims=True)
 
@@ -427,14 +414,12 @@ def do_int2_double_compression_quantization(
         inner_scale = fns.where(inner_scale < eps, eps, inner_scale)
         inner_zp = -min_vals  # positive when min < 0 (typical case)
     else:
-        # --- SYM path ---
         factor = 2 ** (config.num_bits - 1)  # 2
         w_abs_min = fns.abs(fns.min(weight_grouped, axis=reduction_axis, keepdims=True))
         w_max = fns.max(weight_grouped, axis=reduction_axis, keepdims=True)
         inner_scale = fns.where(w_abs_min >= w_max, w_abs_min, -w_max) / factor
         inner_scale = fns.where(fns.abs(inner_scale) < eps, eps, inner_scale)
 
-    # Step 2: Reshape inner scales (and mins) into outer groups of INT2_OUTER_GROUP_SIZE
     scale_shape = list(inner_scale.shape)
 
     group_axis = 0
@@ -462,30 +447,23 @@ def do_int2_double_compression_quantization(
     if is_asym:
         inner_zp_reshaped = inner_zp.reshape(outer_shape)
 
-        # Step 3a ASYM: d must accommodate both sc and zp in uint4 [0, 15]
-        # sc = inner_scale / d <= 15 and zp = inner_zp / d <= 15
         d_for_scale = fns.max(inner_scale_reshaped, axis=outer_reduce_axis, keepdims=True) / 15.0
         d_for_zp = fns.max(inner_zp_reshaped, axis=outer_reduce_axis, keepdims=True) / 15.0
         d = fns.where(d_for_scale >= d_for_zp, d_for_scale, d_for_zp)
         d = fns.where(d < eps, eps, d)
 
-        # Step 4a ASYM: Quantize scales and zero points to uint4 [0, 15]
         sc = fns.round(inner_scale_reshaped / d)
         sc = fns.clip(sc, 0, 15)
 
         zp = fns.round(inner_zp_reshaped / d)
         zp = fns.clip(zp, 0, 15)
 
-        # Reshape back and store
         sc_final = sc.reshape(scale_shape).astype(TensorDataType.uint8)
         zp_final = zp.reshape(scale_shape).astype(TensorDataType.uint8)
 
-        # Expand d to inner-group shape (repeat across outer group)
         d_expanded = fns.repeat(d, INT2_OUTER_GROUP_SIZE, axis=outer_reduce_axis)
         d_final = d_expanded.reshape(scale_shape).astype(TensorDataType.float16)
 
-        # Step 5a ASYM: Re-quantize weights with reconstructed parameters
-        # Dequantization formula: w = (q * sc - zp) * d
         sc_f32 = sc_final.astype(TensorDataType.float32)
         zp_f32 = zp_final.astype(TensorDataType.float32)
         d_f32 = d_final.astype(TensorDataType.float32)
@@ -502,22 +480,17 @@ def do_int2_double_compression_quantization(
             global_scale=d_final,
             global_zero_point=None,
         )
-    # Step 3b SYM: d = max(|inner_scales|) / 7
     d = fns.max(fns.abs(inner_scale_reshaped), axis=outer_reduce_axis, keepdims=True) / 7.0
     d = fns.where(d < eps, eps, d)
 
-    # Step 4b SYM: Quantize scales to int4 [-8, 7]
     sc = fns.round(inner_scale_reshaped / d)
     sc = fns.clip(sc, -8, 7)
 
-    # Reshape back
     sc_final = sc.reshape(scale_shape).astype(TensorDataType.int8)
 
-    # Expand d to inner-group shape
     d_expanded = fns.repeat(d, INT2_OUTER_GROUP_SIZE, axis=outer_reduce_axis)
     d_final = d_expanded.reshape(scale_shape).astype(TensorDataType.float16)
 
-    # Step 5b SYM: Re-quantize weights with reconstructed scale
     eff_scale = d_final.astype(TensorDataType.float32) * sc_final.astype(TensorDataType.float32)
     eff_scale = fns.where(fns.abs(eff_scale) < eps, eps, eff_scale)
 
@@ -620,14 +593,12 @@ def do_integer_dequantization(compressed_weights: CompressedWeight, reduction_ax
     decompressed_weight = tensor.astype(TensorDataType.int32) - zero_point if zero_point is not None else tensor
 
     if compressed_weights.global_scale is not None and zero_point is not None:
-        # INT2 ASYM double compression: w = (q * sc - zp) * d
         t = tensor.astype(TensorDataType.float32)
         sc = scale.astype(TensorDataType.float32)
         zp = zero_point.astype(TensorDataType.float32)
         d = compressed_weights.global_scale.astype(TensorDataType.float32)
         decompressed_weight = (t * sc - zp) * d
     elif compressed_weights.global_scale is not None:
-        # Two-level scaling: w = d * sc * q (SYM double compression or NVFP4)
         decompressed_weight = (
             decompressed_weight.astype(TensorDataType.float32)
             * scale.astype(TensorDataType.float32)

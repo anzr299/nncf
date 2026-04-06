@@ -44,6 +44,7 @@ from nncf.quantization.algorithms.weight_compression.lora_correction import Lora
 from nncf.quantization.algorithms.weight_compression.parameters import CompressedWeight
 from nncf.quantization.algorithms.weight_compression.torch_backend import PTAWQAlgoAlgoBackend
 from nncf.quantization.algorithms.weight_compression.torch_backend import PTWeightCompressionAlgoBackend
+from nncf.quantization.algorithms.weight_compression.weight_lowering import INT2_OUTER_GROUP_SIZE
 from nncf.quantization.algorithms.weight_compression.weight_lowering import compress_weight
 from nncf.tensor import Tensor
 from nncf.tensor.definitions import TensorDataType
@@ -57,6 +58,8 @@ from nncf.torch.model_graph_manager import get_weight_tensor_port_ids
 from nncf.torch.node_utils import get_activation_channel_axis as get_activation_channel_axis_fn
 from nncf.torch.quantization.ignored_patterns import create_rope
 from nncf.torch.quantization.ignored_patterns import create_sam_pe
+from nncf.torch.quantization.layers import INT2AsymmetricWeightsDecompressor
+from nncf.torch.quantization.layers import INT2SymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT4AsymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT4SymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT8AsymmetricWeightsDecompressor
@@ -237,6 +240,25 @@ class FXWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
                 decompressor = INT4AsymmetricWeightsDecompressor(
                     scale=compressed_weight.scale.data,
                     zero_point=compressed_weight.zero_point.data,
+                    compressed_weight_shape=compressed_weight.tensor.shape,
+                    result_shape=weight.shape,
+                    result_dtype=weight.data.dtype,
+                )
+            elif compression_config.mode == CompressWeightsMode.INT2_SYM:
+                compact_gs = compressed_weight.global_scale.data[:, ::INT2_OUTER_GROUP_SIZE]
+                decompressor = INT2SymmetricWeightsDecompressor(
+                    scale=compressed_weight.scale.data,
+                    global_scale=compact_gs,
+                    compressed_weight_shape=compressed_weight.tensor.shape,
+                    result_shape=weight.shape,
+                    result_dtype=weight.data.dtype,
+                )
+            elif compression_config.mode == CompressWeightsMode.INT2_ASYM:
+                compact_gs = compressed_weight.global_scale.data[:, ::INT2_OUTER_GROUP_SIZE]
+                decompressor = INT2AsymmetricWeightsDecompressor(
+                    scale=compressed_weight.scale.data,
+                    zero_point=compressed_weight.zero_point.data,
+                    global_scale=compact_gs,
                     compressed_weight_shape=compressed_weight.tensor.shape,
                     result_shape=weight.shape,
                     result_dtype=weight.data.dtype,

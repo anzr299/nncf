@@ -298,7 +298,7 @@ def check_user_compression_configuration(
         if group_size not in [None, 16]:
             msg = f"INT2 double compression modes only support group size of 16, group size of {group_size} is given."
             raise nncf.ValidationError(msg)
-        if advanced_parameters and advanced_parameters.group_size_fallback_mode is GroupSizeFallbackMode.ADJUST:
+        if advanced_parameters and advanced_parameters.group_size_fallback_mode != GroupSizeFallbackMode.ERROR:
             msg = (
                 "INT2 double compression modes do not support the group size"
                 f" fallback mode {advanced_parameters.group_size_fallback_mode.value}."

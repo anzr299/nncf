@@ -46,11 +46,15 @@ from nncf.torch.quantization.quantize_functions import asymmetric_quantize_lora
 from nncf.torch.quantization.quantize_functions import decompress_asymmetric
 from nncf.torch.quantization.quantize_functions import decompress_symmetric
 from nncf.torch.quantization.quantize_functions import get_scale_zp_from_input_low_input_high
+from nncf.torch.quantization.quantize_functions import pack_int2
 from nncf.torch.quantization.quantize_functions import pack_int4
+from nncf.torch.quantization.quantize_functions import pack_uint2
 from nncf.torch.quantization.quantize_functions import pack_uint4
 from nncf.torch.quantization.quantize_functions import symmetric_quantize
 from nncf.torch.quantization.quantize_functions import symmetric_quantize_lora
+from nncf.torch.quantization.quantize_functions import unpack_int2
 from nncf.torch.quantization.quantize_functions import unpack_int4
+from nncf.torch.quantization.quantize_functions import unpack_uint2
 from nncf.torch.quantization.quantize_functions import unpack_uint4
 from nncf.torch.return_types import maybe_get_values_from_torch_return_type
 from nncf.torch.return_types import maybe_wrap_to_torch_return_type
@@ -1462,6 +1466,151 @@ class INT4SymmetricWeightsDecompressor(BaseWeightsDecompressor):
         x = x.reshape(self.compressed_weight_shape)
 
         result = decompress_symmetric(x, self._scale)
+        result = result.reshape(self.result_shape) if self.result_shape is not None else result
+        result = result.type(dtype=self.result_dtype) if self.result_dtype is not None else result
+        return result
+
+
+class INT2AsymmetricWeightsDecompressor(BaseWeightsDecompressor):
+    def __init__(
+        self,
+        scale: torch.Tensor,
+        zero_point: torch.Tensor,
+        global_scale: torch.Tensor,
+        compressed_weight_shape: tuple[int, ...],
+        result_shape: tuple[int, ...] | None = None,
+        result_dtype: torch.dtype | None = None,
+    ):
+        """
+        :param scale: Inner uint4 scale per group of 16 weights
+        :param zero_point: Inner uint4 zero point per group of 16 weights
+        :param global_scale: Outer fp16 super-block scale
+        :param compressed_weight_shape: Shape of the compressed weight tensor
+        :param result_shape: (Optional) Shape that result should be reshaped to
+        :param result_dtype: (Optional) Data type that result should be cast to
+        """
+        super().__init__()
+        self.register_buffer("_global_scale", global_scale.type(dtype=torch.float16))
+
+        self.scale_shape = scale.shape
+        self.register_buffer("_scale", pack_uint4(scale.type(dtype=torch.uint8)))
+
+        self.zero_point_shape = zero_point.shape
+        self.register_buffer("_zero_point", pack_uint4(zero_point.type(dtype=torch.uint8)))
+
+        self.compressed_weight_shape = compressed_weight_shape
+        self.result_shape = result_shape
+        self.result_dtype = result_dtype
+
+        # Precompute shapes for super-block broadcasting
+        gs_shape = global_scale.shape
+        g = next(i for i in range(1, len(scale.shape)) if scale.shape[i] > 1)
+        self._group_axis = g
+        self._outer_group_size = scale.shape[g] // gs_shape[g]
+
+    @property
+    def quantization_mode(self) -> QuantizationMode:
+        return QuantizationMode.ASYMMETRIC
+
+    def pack_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        if torch.any((weight < 0) | (weight > 3)):
+            msg = "Weight values are not in [0, 3]."
+            raise ValueError(msg)
+        return pack_uint2(weight.type(dtype=torch.uint8))
+
+    def forward(self, x):
+        x = unpack_uint2(x)
+        x = x.reshape(self.compressed_weight_shape).type(dtype=torch.float16)
+
+        scale = unpack_uint4(self._scale)
+        scale = scale.reshape(self.scale_shape).type(dtype=torch.float16)
+
+        zero_point = unpack_uint4(self._zero_point)
+        zero_point = zero_point.reshape(self.zero_point_shape).type(dtype=torch.float16)
+
+        # ASYM inner: dequantized_weight * inner_scale - zp
+        inner = x * scale - zero_point
+
+        # Reshape to expose super-block structure for broadcasting with compact global_scale
+        g = self._group_axis
+        shape = list(inner.shape)
+        shape[g : g + 1] = [shape[g] // self._outer_group_size, self._outer_group_size]
+        inner = inner.reshape(shape)
+
+        # Broadcast: global_scale [rows, n_outer, 1] -> unsqueeze -> [rows, n_outer, 1, 1]
+        result = inner * self._global_scale.unsqueeze(g + 1)
+
+        result = result.reshape(self.compressed_weight_shape)
+        result = result.reshape(self.result_shape) if self.result_shape is not None else result
+        result = result.type(dtype=self.result_dtype) if self.result_dtype is not None else result
+        return result
+
+
+class INT2SymmetricWeightsDecompressor(BaseWeightsDecompressor):
+    def __init__(
+        self,
+        scale: torch.Tensor,
+        global_scale: torch.Tensor,
+        compressed_weight_shape: tuple[int, ...],
+        result_shape: tuple[int, ...] | None = None,
+        result_dtype: torch.dtype | None = None,
+    ):
+        """
+        :param scale: Inner int4 scale per group of 16 weights
+        :param global_scale: Compact outer fp16 super-block scale (d), one per outer group
+        :param compressed_weight_shape: Shape of the compressed weight tensor
+        :param result_shape: (Optional) Shape that result should be reshaped to
+        :param result_dtype: (Optional) Data type that result should be cast to
+        """
+        super().__init__()
+        self.register_buffer("_global_scale", global_scale.type(dtype=torch.float16))
+
+        self.scale_shape = scale.shape
+        self.register_buffer("_scale", pack_int4(scale.type(dtype=torch.int8)))
+
+        self.compressed_weight_shape = compressed_weight_shape
+        self.result_shape = result_shape
+        self.result_dtype = result_dtype
+
+        # Precompute shapes for super-block broadcasting
+        gs_shape = global_scale.shape
+        g = next(i for i in range(1, len(scale.shape)) if scale.shape[i] > 1)
+        self._group_axis = g
+        self._outer_group_size = scale.shape[g] // gs_shape[g]
+
+    @property
+    def quantization_mode(self) -> QuantizationMode:
+        return QuantizationMode.SYMMETRIC
+
+    def pack_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        if torch.is_floating_point(weight):
+            msg = f"Invalid weight dtype {weight.type}. Integer types are supported."
+            raise ValueError(msg)
+        if torch.any((weight < -2) | (weight > 1)):
+            msg = "Tensor values are not in [-2, 1]."
+            raise ValueError(msg)
+        return pack_int2(weight.type(dtype=torch.int8))
+
+    def forward(self, x):
+        x = unpack_int2(x)
+        x = x.reshape(self.compressed_weight_shape).type(dtype=torch.float16)
+
+        scale = unpack_int4(self._scale)
+        scale = scale.reshape(self.scale_shape).type(dtype=torch.float16)
+
+        # SYM inner: inner_scale * dequantized weight
+        inner = scale * x
+
+        # Reshape to expose super-block structure for broadcasting with compact global_scale
+        g = self._group_axis
+        shape = list(inner.shape)
+        shape[g : g + 1] = [shape[g] // self._outer_group_size, self._outer_group_size]
+        inner = inner.reshape(shape)
+
+        # Broadcast: global_scale [rows, n_outer, 1] -> unsqueeze -> [rows, n_outer, 1, 1]
+        result = self._global_scale.unsqueeze(g + 1) * inner
+
+        result = result.reshape(self.compressed_weight_shape)
         result = result.reshape(self.result_shape) if self.result_shape is not None else result
         result = result.type(dtype=self.result_dtype) if self.result_dtype is not None else result
         return result
