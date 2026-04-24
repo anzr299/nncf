@@ -98,6 +98,8 @@ class CompressWeightsMode(StrEnum):
     :param CODEBOOK: Codebook (LUT) quantization format.
     :param ADAPTIVE_CODEBOOK: Adaptive codebook (LUT) quantization format.
     :param CB4: Codebook (LUT) format with 16 fixed fp8 values in E4M3 format.
+    :param QTIP_2BIT: QTIP 2-bit trellis-coded quantization.
+    :param QTIP_3BIT: QTIP 3-bit trellis-coded quantization. Same as QTIP_2BIT but with 3 bpw.
     """
 
     INT8_SYM = "int8_sym"
@@ -113,6 +115,8 @@ class CompressWeightsMode(StrEnum):
     NVFP4 = "nvfp4"
     CODEBOOK = "codebook"
     ADAPTIVE_CODEBOOK = "adaptive_codebook"
+    QTIP_2BIT = "qtip_2bit"
+    QTIP_3BIT = "qtip_3bit"
 
 
 @api(canonical_alias="nncf.CompressionFormat")

@@ -395,6 +395,13 @@ def compress_weight(
         else (None, None)
     )
 
+    # QTIP modes are fully precomputed by the QTIP algorithm; return directly.
+    if config.mode in (CompressWeightsMode.QTIP_2BIT, CompressWeightsMode.QTIP_3BIT):
+        if precomputed_compressed_weight is not None and precomputed_compressed_weight.tensor is not None:
+            return precomputed_compressed_weight
+        msg = "QTIP modes require precomputed compressed weights from the QTIP algorithm."
+        raise nncf.ValidationError(msg)
+
     if not config.is_integer:
         if (
             precomputed_compressed_weight is not None

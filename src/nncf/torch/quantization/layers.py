@@ -1467,6 +1467,73 @@ class INT4SymmetricWeightsDecompressor(BaseWeightsDecompressor):
         return result
 
 
+class QTIPWeightsDecompressor(nn.Module):
+    """
+    Decompresses QTIP trellis-coded weights.
+
+    Forward input x: (num_groups, bytes_per_group) uint8 packed 2-bit codes.
+    Buffer: per-group scale (float32).
+
+    Decompression:
+      1. Unpack 2-bit codes from bytes
+      2. Compute 16-bit node indices from sliding code windows (parallel)
+      3. Run 1MAD/3INST on all nodes (vectorized)
+      4. Multiply by per-group scale
+    """
+
+    QTIP_QUANTIZATION_MODE = "qtip"
+
+    def __init__(
+        self,
+        scale: torch.Tensor,
+        result_shape: tuple[int, ...],
+        decode_mode: str = "1mad",
+        num_bits: int = 2,
+        result_dtype: torch.dtype | None = None,
+    ):
+        super().__init__()
+        self.register_buffer("_scale", scale)
+        self.result_shape = result_shape
+        self.decode_mode = decode_mode
+        self.num_bits = num_bits
+        self.result_dtype = result_dtype
+        self._num_elements = 1
+        for s in result_shape:
+            self._num_elements *= s
+
+    @property
+    def quantization_mode(self) -> str:
+        return self.QTIP_QUANTIZATION_MODE
+
+    def pack_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        return weight
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        from nncf.quantization.algorithms.weight_compression.qtip import _codes_to_nodes
+        from nncf.quantization.algorithms.weight_compression.qtip import node_value_1mad
+        from nncf.quantization.algorithms.weight_compression.qtip import node_value_3inst
+
+        decode_fn = node_value_1mad if self.decode_mode == "1mad" else node_value_3inst
+        num_groups = x.shape[0]
+
+        # Unpack codes
+        if self.num_bits == 2:
+            p = x.to(torch.int32)
+            codes = torch.stack([p & 0x3, (p >> 2) & 0x3, (p >> 4) & 0x3, (p >> 6) & 0x3], dim=-1)
+            codes = codes.reshape(num_groups, -1).long()
+        else:
+            codes = x.long()
+
+        # Parallel: sliding window of codes → 16-bit node indices → decode
+        nodes = _codes_to_nodes(codes, self.num_bits)
+        result = decode_fn(nodes) * self._scale
+
+        result = result.reshape(-1)[: self._num_elements].reshape(self.result_shape)
+        if self.result_dtype is not None:
+            result = result.to(dtype=self.result_dtype)
+        return result
+
+
 @COMPRESSION_MODULES.register()
 class SQMultiply(torch.nn.Module, StatefulModuleInterface):
     SCALE_SHAPE_KEY = "scale_shape"

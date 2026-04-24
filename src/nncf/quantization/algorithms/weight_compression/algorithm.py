@@ -100,6 +100,8 @@ def get_weight_compression_configuration(
             CompressWeightsMode.CODEBOOK,
             CompressWeightsMode.CB4,
             CompressWeightsMode.ADAPTIVE_CODEBOOK,
+            CompressWeightsMode.QTIP_2BIT,
+            CompressWeightsMode.QTIP_3BIT,
         ]:
             group_size = -1
         else:
@@ -294,6 +296,28 @@ def check_user_compression_configuration(
             )
             raise nncf.ValidationError(msg)
 
+    if mode in (CompressWeightsMode.QTIP_2BIT, CompressWeightsMode.QTIP_3BIT):
+        qtip_incompatible = {
+            "awq": awq,
+            "scale_estimation": scale_estimation,
+            "gptq": gptq,
+            "lora_correction": lora_correction,
+        }
+        incompatible = [name for name, value in qtip_incompatible.items() if value]
+        if incompatible:
+            msg = (
+                f"QTIP modes are not compatible with {', '.join(incompatible)}. "
+                "QTIP uses its own trellis-coded quantization and does not support these options."
+            )
+            raise nncf.ParameterNotSupportedError(msg)
+
+        if group_size is not None and group_size != -1:
+            msg = (
+                f"QTIP modes use block-based compression (Tx x Ty) and do not support group_size={group_size}. "
+                "Set group_size to -1 or None."
+            )
+            raise nncf.ValidationError(msg)
+
 
 class WeightCompression(Algorithm):
     """
@@ -382,6 +406,7 @@ class WeightCompression(Algorithm):
         self._gptq = gptq
         self._lora_correction = lora_correction
         self._codebook_estimation = mode == CompressWeightsMode.ADAPTIVE_CODEBOOK
+        self._qtip = mode in (CompressWeightsMode.QTIP_2BIT, CompressWeightsMode.QTIP_3BIT)
         self._backup_mode = backup_mode
         self._compression_format = compression_format
         self._advanced_parameters = (
@@ -428,6 +453,21 @@ class WeightCompression(Algorithm):
                 codebook_estimation_params.value_type,
                 codebook_estimation_params.across_blocks,
                 codebook_estimation_params.num_elements,
+            )
+
+        if self._qtip:
+            from nncf.quantization.algorithms.weight_compression.qtip import QTIP
+            from nncf.quantization.algorithms.weight_compression.qtip import QTIPConfig
+
+            qtip_params = self._advanced_parameters.qtip_params
+            num_bits = 2 if mode == CompressWeightsMode.QTIP_2BIT else 3
+            self._qtip_algo = QTIP(
+                config=QTIPConfig(
+                    decode_mode=qtip_params.decode_mode,
+                    num_bits=num_bits,
+                    Tx=qtip_params.Tx,
+                    Ty=qtip_params.Ty,
+                ),
             )
 
         self._data_aware_mixed_precision = (
@@ -1161,7 +1201,15 @@ class WeightCompression(Algorithm):
                 backend_entity=self._backend_entity,
             )
 
-        if self._gptq:
+        if self._qtip:
+            del statistics
+            model, precomputed_compressed_weights = self._qtip_algo.apply(
+                model=model,
+                graph=graph,
+                weight_compression_parameters=all_weight_params,
+                backend_entity=self._backend_entity,
+            )
+        elif self._gptq:
             del statistics
             model, precomputed_compressed_weights = self._gptq_algo.apply(
                 model=model,

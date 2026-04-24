@@ -511,6 +511,8 @@ def compress_weights(
             CompressWeightsMode.CODEBOOK,
             CompressWeightsMode.ADAPTIVE_CODEBOOK,
             CompressWeightsMode.CB4,
+            CompressWeightsMode.QTIP_2BIT,
+            CompressWeightsMode.QTIP_3BIT,
         ]
         if mode in not_supported_modes:
             msg = (
@@ -591,6 +593,10 @@ def compress_weights(
     elif backend == BackendType.OPENVINO:
         from nncf.openvino.quantization.quantize_model import compress_weights_impl as ov_compress_weights_impl
 
+        if mode in (CompressWeightsMode.QTIP_2BIT, CompressWeightsMode.QTIP_3BIT):
+            msg = "OpenVINO backend does not support QTIP modes for weight compression. Use Torch FX backend."
+            raise nncf.ParameterNotSupportedError(msg)
+
         if any((scale_estimation, gptq, lora_correction)) and dataset is None:
             msg = "Scale estimation, GPTQ or Lora Correction algorithm is defined, but dataset is None."
             raise nncf.ParameterNotSupportedError(msg)
@@ -633,6 +639,8 @@ def compress_weights(
             CompressWeightsMode.CODEBOOK,
             CompressWeightsMode.ADAPTIVE_CODEBOOK,
             CompressWeightsMode.CB4,
+            CompressWeightsMode.QTIP_2BIT,
+            CompressWeightsMode.QTIP_3BIT,
         ]
         if mode in not_supported_modes:
             msg = (

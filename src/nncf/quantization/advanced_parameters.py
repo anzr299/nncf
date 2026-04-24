@@ -404,6 +404,25 @@ class AdvancedAdaptiveCodebookParameters:
 
 @api()
 @dataclass
+class AdvancedQTIPParameters:
+    """
+    Contains advanced parameters for QTIP algorithm.
+
+    :param decode_mode: Code generation algorithm, either "1mad" or "3inst".
+    :type decode_mode: str
+    :param Tx: Block output dimension. Defaults to 16.
+    :type Tx: int
+    :param Ty: Block input dimension. Defaults to 16.
+    :type Ty: int
+    """
+
+    decode_mode: str = "1mad"
+    Tx: int = 16
+    Ty: int = 16
+
+
+@api()
+@dataclass
 class AdvancedCompressionParameters:
     """
     Contains advanced parameters for compression algorithms.
@@ -432,6 +451,8 @@ class AdvancedCompressionParameters:
     :type codebook: TTensor
     :param adaptive_codebook_params: Advanced parameters for adaptive codebook estimation.
     :type adaptive_codebook_params: AdvancedAdaptiveCodebookParameters
+    :param qtip_params: Advanced parameters for QTIP algorithm.
+    :type qtip_params: AdvancedQTIPParameters
     """
 
     statistics_path: str | None = None
@@ -449,6 +470,7 @@ class AdvancedCompressionParameters:
     adaptive_codebook_params: AdvancedAdaptiveCodebookParameters = field(
         default_factory=AdvancedAdaptiveCodebookParameters
     )
+    qtip_params: AdvancedQTIPParameters = field(default_factory=AdvancedQTIPParameters)
 
 
 @api()

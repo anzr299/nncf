@@ -53,6 +53,10 @@ class WeightCompressionConfig:
             CompressWeightsMode.MXFP8_E4M3,
         ]:
             return 8
+        if self.mode == CompressWeightsMode.QTIP_2BIT:
+            return 2
+        if self.mode == CompressWeightsMode.QTIP_3BIT:
+            return 3
         return 4
 
     @property
@@ -74,6 +78,8 @@ class WeightCompressionConfig:
             CompressWeightsMode.CODEBOOK,
             CompressWeightsMode.ADAPTIVE_CODEBOOK,
             CompressWeightsMode.CB4,
+            CompressWeightsMode.QTIP_2BIT,
+            CompressWeightsMode.QTIP_3BIT,
         ]
 
     @property
@@ -110,6 +116,8 @@ class WeightCompressionConfig:
             CompressWeightsMode.NVFP4: TensorDataType.f4e2m1,
             CompressWeightsMode.FP8_E4M3: TensorDataType.f8e4m3,
             CompressWeightsMode.MXFP8_E4M3: TensorDataType.f8e4m3,
+            CompressWeightsMode.QTIP_2BIT: TensorDataType.uint8,
+            CompressWeightsMode.QTIP_3BIT: TensorDataType.uint8,
         }
         return dtype_per_mode[self.mode]
 

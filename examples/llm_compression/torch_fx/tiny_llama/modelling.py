@@ -34,7 +34,8 @@ class FXAutoModelForCausalLM(OptimizedModel, GenerationMixin):
     ) -> None:
         super().__init__(model, config)
         if compile:
-            self.model = torch.compile(model, backend="openvino", options={"aot_autograd": True})
+            self.model = torch.compile(model)
+            # self.model = torch.compile(model, backend="openvino", options={"aot_autograd": True})
         self.generation_config = generation_config
         self.main_input_name = "input_ids"
         self._device = device.upper()
@@ -106,7 +107,7 @@ def convert_and_export_with_cache(model: PreTrainedModel) -> tuple[ExportedProgr
 
     dynamic_shapes = {"input_ids": {1: torch.export.Dim.DYNAMIC}, "cache_position": {0: torch.export.Dim.DYNAMIC}}
 
-    exported_program = torch.export.export_for_training(
+    exported_program = torch.export.export(
         model,
         args=(
             example_input_ids,

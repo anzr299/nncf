@@ -61,6 +61,7 @@ from nncf.torch.quantization.layers import INT4AsymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT4SymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT8AsymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT8SymmetricWeightsDecompressor
+from nncf.torch.quantization.layers import QTIPWeightsDecompressor
 
 
 class FXWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
@@ -239,6 +240,18 @@ class FXWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
                     zero_point=compressed_weight.zero_point.data,
                     compressed_weight_shape=compressed_weight.tensor.shape,
                     result_shape=weight.shape,
+                    result_dtype=weight.data.dtype,
+                )
+            elif compression_config.mode in (
+                CompressWeightsMode.QTIP_2BIT,
+                CompressWeightsMode.QTIP_3BIT,
+            ):
+                meta = compressed_weight.codebook
+                decompressor = QTIPWeightsDecompressor(
+                    scale=meta["scale"],
+                    result_shape=meta["result_shape"],
+                    decode_mode=meta["decode_mode"],
+                    num_bits=meta["num_bits"],
                     result_dtype=weight.data.dtype,
                 )
 
