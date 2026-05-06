@@ -625,6 +625,7 @@ class WeightCompression(Algorithm):
         model: TModel,
         graph: NNCFGraph,
         statistics_points: StatisticPointsContainer,
+        dataset: Dataset | None = None,
     ) -> None:
         """
         Applies mixed precision compression by selecting weights for primary precision based on the
@@ -635,10 +636,11 @@ class WeightCompression(Algorithm):
         :param model: The model.
         :param graph: The model graph associated with the model.
         :param statistics_points: Statistics points.
+        :param dataset: Optional calibration dataset (required for gradient-based sensitivity metrics).
         """
         if self._ratio < 1 and len(ratio_defining_params) > 0:
             primary_precision_weight_params = self._mixed_precision_algo.apply(
-                model, graph, statistics_points, weight_params=ratio_defining_params
+                model, graph, statistics_points, dataset=dataset, weight_params=ratio_defining_params
             )
             # At this point ratio_defining_params are all in primary precision. Below we update parameters
             # which need to be set to the backup precision.
@@ -932,7 +934,11 @@ class WeightCompression(Algorithm):
         if statistic_points is None:
             statistic_points = self.get_statistic_points(model, graph, matmul_input_to_output_nodes_map)
             statistic_points = self._collect_statistics(dataset, graph, model, statistic_points)
-        statistics = self._get_statistics_for_weights_compression(matmul_input_to_output_nodes_map, statistic_points)
+        statistics = (
+            self._get_statistics_for_weights_compression(matmul_input_to_output_nodes_map, statistic_points)
+            if self._data_aware_compression
+            else None
+        )
         return statistics, statistic_points
 
     @staticmethod
@@ -1039,6 +1045,7 @@ class WeightCompression(Algorithm):
                             self._data_aware_compression
                             or self._awq
                             or self._sensitivity_metric == SensitivityMetric.HESSIAN_INPUT_ACTIVATION
+                            or self._sensitivity_metric == SensitivityMetric.YAQA_HESSIAN_KRONECKER
                         )
                     ):
                         # MoE operations are usually matmuls, so the check for matmul metatype is done
@@ -1101,7 +1108,7 @@ class WeightCompression(Algorithm):
             model, graph, statistic_points, dataset, ratio_defining_params, all_weight_params
         )
         # Apply Mixed precision algorithm to ratio defining parameters
-        self.apply_mixed_precision(ratio_defining_params, model, graph, statistic_points)
+        self.apply_mixed_precision(ratio_defining_params, model, graph, statistic_points, dataset)
         self.validate_group_size(ratio_defining_params)
 
         # Print statistics

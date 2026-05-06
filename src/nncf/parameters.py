@@ -200,6 +200,11 @@ class SensitivityMetric(StrEnum):
         multiplied by inverted 8-bit quantization noise.
     :param MEAN_ACTIVATION_MAGNITUDE: The mean magnitude of the layers' inputs
         multiplied by inverted 8-bit quantization noise.
+    :param YAQA_HESSIAN_KRONECKER: A Kronecker-factored Hessian sensitivity metric inspired by the YAQA paper
+        (arXiv:2505.22988). Approximates the layer-wise Hessian as a Kronecker product of the input covariance
+        and the output gradient covariance: Tr(E[X^T X]) * Tr(E[G^T G]) * ||ΔW||_F^2, where G = ∂L/∂Y is
+        the gradient of a proxy loss w.r.t. the layer output. Requires a PyTorch (Torch) backend
+        since gradient computation uses autograd.
     """
 
     WEIGHT_QUANTIZATION_ERROR = "weight_quantization_error"
@@ -207,6 +212,7 @@ class SensitivityMetric(StrEnum):
     MEAN_ACTIVATION_VARIANCE = "mean_activation_variance"
     MAX_ACTIVATION_VARIANCE = "max_activation_variance"
     MEAN_ACTIVATION_MAGNITUDE = "mean_activation_magnitude"
+    YAQA_HESSIAN_KRONECKER = "yaqa_hessian_kronecker"
 
 
 @api(canonical_alias="nncf.QuantizationMode")
