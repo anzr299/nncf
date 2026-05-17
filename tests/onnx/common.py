@@ -222,6 +222,15 @@ class ModelBuilder:
 
         return output
 
+    def add_squeeze(self, input: str, output: str | None = None) -> str:
+        i = len(self._nodes)
+
+        output = f"Squeeze_{i}_output" if output is None else output
+        self._nodes.append(
+            onnx.helper.make_node(op_type="Squeeze", inputs=[input], outputs=[output], name=f"Squeeze_{i}")
+        )
+        return output
+
     def add_unsqueeze(self, input: str, axes: tuple[int, ...], output: str | None = None) -> str:
         i = len(self._nodes)
 
@@ -286,3 +295,11 @@ class ModelBuilder:
 
         model = onnx.helper.make_model(graph, opset_imports=[op], ir_version=ir_version)
         return model
+
+    def add_split(self, input: str, axis: int, num_outputs: int) -> list[str]:
+        i = len(self._nodes)
+        outputs = [f"output_{i}_{j}" for j in range(num_outputs)]
+        self._nodes.append(
+            onnx.helper.make_node("Split", [input], outputs, name=f"{i}_split", num_outputs=num_outputs, axis=axis)
+        )
+        return outputs

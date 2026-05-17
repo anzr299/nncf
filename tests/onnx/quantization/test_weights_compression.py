@@ -10,6 +10,7 @@
 # limitations under the License.
 
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import reduce
 from operator import mul
@@ -19,12 +20,14 @@ import numpy as np
 import onnx
 import onnxruntime
 import pytest
+import torch
 from onnx import TensorProto
 from onnx import helper
 from onnx import numpy_helper
 from onnxruntime import InferenceSession
 from packaging import version
 
+import nncf
 from nncf import CompressWeightsMode
 from nncf.common.factory import EngineFactory
 from nncf.common.factory import build_graph
@@ -38,10 +41,20 @@ from nncf.onnx.graph.onnx_helper import get_tensor_value
 from nncf.onnx.graph.transformations.commands import ONNXOutputInsertionCommand
 from nncf.onnx.graph.transformations.commands import ONNXTargetPoint
 from nncf.quantization import compress_weights
+from nncf.scopes import IgnoredScope
 from nncf.tensor import Tensor
 from nncf.tensor import TensorDataType
 from tests.cross_fw.test_templates.template_test_weights_compression import TemplateWeightCompression
 from tests.onnx.common import ModelBuilder
+
+UNSUPPORTED_MODES = (
+    CompressWeightsMode.NF4,
+    CompressWeightsMode.NVFP4,
+    CompressWeightsMode.MXFP4,
+    CompressWeightsMode.MXFP8_E4M3,
+    CompressWeightsMode.FP8_E4M3,
+    CompressWeightsMode.FP4,
+)
 
 
 def create_model(opset_version=21):
@@ -79,7 +92,7 @@ def create_model(opset_version=21):
     )
 
     # Create the model and set the opset version to 21.
-    model_def = helper.make_model(graph_def, producer_name="synthetic-onnx-model")
+    model_def = helper.make_model(graph_def, producer_name="synthetic-onnx-model", ir_version=11)
     model_def.opset_import[0].version = opset_version
 
     return model_def
@@ -268,10 +281,6 @@ def test_correct_dequantizelinear_uint4(mode_weight_type, group_size):
             dq_cnt += 1
 
 
-@pytest.mark.xfail(
-    version.parse(onnx.__version__) >= version.parse("1.18.0"),
-    reason="onnxruntime not support default IR for onnx==1.18.0",
-)
 @pytest.mark.parametrize(
     "mode",
     [
@@ -290,10 +299,6 @@ def test_compression_with_inference(mode):
     session.run(None, {"input": input_data})
 
 
-@pytest.mark.xfail(
-    version.parse(onnx.__version__) >= version.parse("1.18.0"),
-    reason="onnxruntime not support default IR for onnx==1.18.0",
-)
 def test_matmulnbits():
     rtol = 1e-5
     if version.parse(onnxruntime.__version__) < version.parse("1.21.1"):
@@ -356,6 +361,13 @@ def test_matmulnbits_gemm(trans_b: int):
     assert np.allclose(output21, output19, rtol=rtol, atol=1e-6)
 
 
+@pytest.mark.parametrize("mode", UNSUPPORTED_MODES)
+def test_raise_error_with_not_int8(mode):
+    dummy_model = ModelBuilder().build()
+    with pytest.raises(nncf.ParameterNotSupportedError):
+        compress_weights(dummy_model, mode=mode)
+
+
 class TestONNXTemplateWeightCompression(TemplateWeightCompression):
     @staticmethod
     def cast_to(x: np.ndarray, dtype: TensorDataType) -> np.ndarray:
@@ -378,7 +390,7 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
         return mb.build()
 
     @staticmethod
-    def get_RoPE_model() -> onnx.ModelProto:
+    def get_RoPE_model(degree: int) -> onnx.ModelProto:
         """
         Builds a model to be used in the TemplateWeightCompression.test_rope_weight_compression() test.
         """
@@ -493,23 +505,33 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
         return model
 
     @staticmethod
-    def get_model_for_test_scale_estimation() -> onnx.ModelProto:
+    def get_model_for_test_scale_estimation(transpose_a) -> onnx.ModelProto:
         """
         Builds a model to be used in the following tests:
             - TemplateWeightCompression.test_scale_estimation()
             - TemplateWeightCompression.test_scale_estimation_outlier_channel_has_lowest_error()
         tests.
         """
+
         mb = ModelBuilder()
         x = mb.add_input("input", (1, 4, 8))
         output = mb.add_output("output", (1, 4, 16))
         weights = np.arange(0, 16 * 8, dtype=np.float32).reshape(16, 8).T
-        mb.add_matmul(x, shape=(8, 16), output=output, data=weights)
+        if transpose_a:
+            squeeze = mb.add_squeeze(x)
+            transpose = mb.add_transpose(squeeze, (1, 0))
+            mb.add_gemm(transpose, shape=(8, 16), output=output, weight_data=weights, trans_a=1)
+        else:
+            mb.add_matmul(x, shape=(8, 16), output=output, data=weights)
 
         return mb.build(opset_version=21)
 
     @staticmethod
-    def get_moe_model_for_test_scale_estimation() -> onnx.ModelProto:
+    def get_moe_model_for_test_scale_estimation(transpose_a: bool) -> onnx.ModelProto:
+        if transpose_a:
+            msg = "ONNX does not support transpose_a + MoE"
+            pytest.skip(msg)
+
         num_experts = 2
         hidden_dim = 8
         out_dim = 16
@@ -804,11 +826,19 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
 
         return mb.build(opset_version=21)
 
+    @classmethod
+    def get_num_int4_nodes(cls, model: onnx.ModelProto) -> int:
+        return cls._get_num_typed_nodes(model, [onnx.TensorProto.UINT4, onnx.TensorProto.INT4])
+
+    @classmethod
+    def get_num_int8_nodes(cls, model: onnx.ModelProto) -> int:
+        return cls._get_num_typed_nodes(model, [onnx.TensorProto.UINT8, onnx.TensorProto.INT8])
+
     @staticmethod
-    def get_num_int4_nodes(model: onnx.ModelProto) -> int:
+    def _get_num_typed_nodes(model: onnx.ModelProto, types: list[onnx.TensorProto]) -> int:
         num = 0
         for i in model.graph.initializer:
-            if i.data_type in [onnx.TensorProto.UINT4, onnx.TensorProto.INT4]:
+            if i.data_type in types:
                 num += 1
         return num
 
@@ -937,3 +967,71 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
     @pytest.fixture
     def transpose_a_supported(self) -> bool:
         return True
+
+    @pytest.mark.skip("RoPE pattern is invalid for the ONNX backend, ticket 183208")
+    def test_rope_weight_compression(self):
+        pass
+
+
+class LinearModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        weight = torch.arange(0, 8 * 16, dtype=torch.float32).reshape(16, 8)
+        self.linear = torch.nn.Linear(weight.shape[1], weight.shape[0], False)
+        self.linear.weight = torch.nn.Parameter(weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x)
+
+
+@pytest.fixture(name="model_for_ignored_scope_test", scope="module")
+def get_model_for_ignored_scope_test(tmp_path_factory) -> onnx.ModelProto:
+    pt_model = LinearModel().eval()
+    onnx_path = tmp_path_factory.mktemp("onnx_models") / "LinearModel.onnx"
+    torch.onnx.export(
+        pt_model, torch.randn(1, 8), onnx_path, input_names=["input"], output_names=["output"], external_data=False
+    )
+    model = onnx.load(onnx_path)
+    return model
+
+
+@dataclass
+class ParamIgnoredScope:
+    name: str
+    ignored_scope: IgnoredScope
+    ref: set[str]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+@pytest.mark.parametrize(
+    "param",
+    (
+        ParamIgnoredScope("empty", IgnoredScope(), {"linear.weight_quantized"}),
+        pytest.param(
+            ParamIgnoredScope("name_const", IgnoredScope(names=["linear.weight"]), set()),
+            marks=pytest.mark.xfail(reason="See ticket 186262"),
+        ),
+        ParamIgnoredScope("name_op", IgnoredScope(names=["node_linear"]), set()),
+        pytest.param(
+            ParamIgnoredScope("pattern_const", IgnoredScope(patterns=[".*weight"]), set()),
+            marks=pytest.mark.xfail(reason="See ticket 186262"),
+        ),
+        ParamIgnoredScope("pattern_op", IgnoredScope(patterns=["node_li.*"]), set()),
+    ),
+    ids=str,
+)
+def test_weight_compress_with_ignored_scope(param: ParamIgnoredScope, model_for_ignored_scope_test: onnx.ModelProto):
+    model = deepcopy(model_for_ignored_scope_test)
+
+    compressed_model = compress_weights(
+        model,
+        mode=CompressWeightsMode.INT4_SYM,
+        group_size=-1,
+        all_layers=True,
+        ignored_scope=param.ignored_scope,
+    )
+
+    names = {i.name for i in compressed_model.graph.initializer if i.data_type == onnx.TensorProto.INT4}
+    assert names == param.ref

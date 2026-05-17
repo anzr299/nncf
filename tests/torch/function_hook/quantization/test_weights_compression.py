@@ -11,6 +11,7 @@
 
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 import pytest
 import torch
@@ -27,11 +28,13 @@ from nncf.parameters import CompressionFormat
 from nncf.quantization import compress_weights
 from nncf.quantization.advanced_parameters import AdvancedCompressionParameters
 from nncf.quantization.algorithms.smooth_quant.torch_backend import SQMultiply
+from nncf.scopes import IgnoredScope
 from nncf.tensor import Tensor
 from nncf.tensor import TensorDataType
 from nncf.torch.function_hook import get_hook_storage
 from nncf.torch.function_hook import wrap_model
 from nncf.torch.function_hook.nncf_graph.nncf_graph_builder import GraphModelWrapper
+from nncf.torch.quantization.layers import BaseWeightsDecompressor
 from nncf.torch.quantization.layers import INT4AsymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT4SymmetricWeightsDecompressor
 from nncf.torch.quantization.layers import INT8AsymmetricWeightsDecompressor
@@ -53,6 +56,7 @@ INT4_MODES = (CompressWeightsMode.INT4_SYM, CompressWeightsMode.INT4_ASYM)
 SUPPORTED_MODES = INT8_MODES + INT4_MODES
 UNSUPPORTED_MODES = (
     CompressWeightsMode.NF4,
+    CompressWeightsMode.NVFP4,
     CompressWeightsMode.MXFP4,
     CompressWeightsMode.MXFP8_E4M3,
     CompressWeightsMode.FP8_E4M3,
@@ -111,13 +115,14 @@ class MatMulModel(torch.nn.Module):
 
 
 class LinearModel(torch.nn.Module):
-    def __init__(self, weight: torch.Tensor = torch.ones(size=(256, 256), dtype=torch.float32)):
+    def __init__(self):
         super().__init__()
-        self.linear = torch.nn.Linear(weight.shape[0], weight.shape[1], False)
+        weight = torch.arange(0, 8 * 16, dtype=torch.float32).reshape(16, 8)
+        self.linear = torch.nn.Linear(weight.shape[1], weight.shape[0], False)
         self.linear.weight = torch.nn.Parameter(weight)
 
-    def forward(self, input):
-        return self.linear(input)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x)
 
 
 class SimpleMoEModel(nn.Module):
@@ -573,7 +578,7 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
         return MatMulModel(255 * torch.eye(3, dtype=torch.float32))
 
     @staticmethod
-    def get_RoPE_model() -> torch.nn.Module:
+    def get_RoPE_model(degree: int) -> torch.nn.Module:
         return RoPEModel()
 
     @staticmethod
@@ -582,14 +587,20 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
 
     @staticmethod
     def get_sequential_matmul_model(transpose_a: bool) -> torch.nn.Module:
+        if transpose_a:
+            pytest.skip("transpose_a=True is not supported for PT backend")
         return SequentialMatmulModel()
 
     @staticmethod
-    def get_model_for_test_scale_estimation():
-        return LinearModel(torch.arange(0, 8 * 16, dtype=torch.float32).reshape(16, 8))
+    def get_model_for_test_scale_estimation(transpose_a: bool):
+        if transpose_a:
+            pytest.skip("transpose_a=True is not supported for PT backend")
+        return LinearModel()
 
     @staticmethod
-    def get_moe_model_for_test_scale_estimation():
+    def get_moe_model_for_test_scale_estimation(transpose_a: bool):
+        if transpose_a:
+            pytest.skip("transpose_a=True is not supported for PT backend")
         num_experts = 2
         hidden_dim = 8
         out_dim = 16
@@ -805,11 +816,19 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
             return "linear5/linear/0"
         return "/bmm/4"
 
+    @classmethod
+    def get_num_int4_nodes(cls, model: torch.nn.Module) -> int:
+        return cls._get_num_typed_nodes(model, (INT4SymmetricWeightsDecompressor, INT4AsymmetricWeightsDecompressor))
+
+    @classmethod
+    def get_num_int8_nodes(cls, model: torch.nn.Module) -> int:
+        return cls._get_num_typed_nodes(model, (INT8SymmetricWeightsDecompressor, INT8AsymmetricWeightsDecompressor))
+
     @staticmethod
-    def get_num_int4_nodes(model: torch.nn.Module) -> int:
+    def _get_num_typed_nodes(model: torch.nn.Module, types: tuple[BaseWeightsDecompressor, ...]) -> int:
         num = 0
         for op in get_hook_storage(model).modules():
-            num += isinstance(op, (INT4SymmetricWeightsDecompressor, INT4AsymmetricWeightsDecompressor))
+            num += isinstance(op, types)
         return num
 
     @staticmethod
@@ -895,12 +914,12 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
         ]
 
     @staticmethod
-    def get_transposable_awq_model(transpose_a: bool, transpose_b: bool, is_3d_weights: bool = False):
-        pass
+    def get_transposable_awq_model(transpose_a: bool, transpose_b: bool, input_shape=None, is_3d_weights: bool = False):
+        pytest.skip("Transposable models are not supported")
 
-    @pytest.fixture
-    def transpose_a_supported(self) -> bool:
-        return False
+    @pytest.mark.skip("RoPE pattern is invalid for the Torch backend, ticket 183208")
+    def test_rope_weight_compression(self):
+        pass
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -917,3 +936,39 @@ def test_half_precision_models(dtype):
         awq=True,
         dataset=nncf.Dataset([dict(inputs)]),
     )
+
+
+@dataclass
+class ParamIgnoredScope:
+    name: str
+    ignored_scope: IgnoredScope
+    ref: set[str]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+@pytest.mark.parametrize(
+    "param",
+    (
+        ParamIgnoredScope("empty", IgnoredScope(), {"post_hooks.linear:weight__0.0"}),
+        ParamIgnoredScope("name_const", IgnoredScope(names=["linear.weight"]), set()),
+        ParamIgnoredScope("name_op", IgnoredScope(names=["linear/linear/0"]), set()),
+        ParamIgnoredScope("pattern_const", IgnoredScope(patterns=[".*weight"]), set()),
+        ParamIgnoredScope("pattern_op", IgnoredScope(patterns=["linear/*"]), set()),
+    ),
+    ids=str,
+)
+def test_weight_compress_with_ignored_scope(param: ParamIgnoredScope):
+    model = wrap_model(LinearModel())
+    example_input = torch.rand(8, 8)
+    wrapped_model = GraphModelWrapper(model, example_input=example_input)
+    compressed_model = compress_weights(
+        wrapped_model,
+        mode=CompressWeightsMode.INT4_SYM,
+        group_size=-1,
+        all_layers=True,
+        ignored_scope=param.ignored_scope,
+    )
+    hooks = {n for n, _ in get_hook_storage(compressed_model).named_hooks()}
+    assert hooks == param.ref

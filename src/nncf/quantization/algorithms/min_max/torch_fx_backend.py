@@ -12,6 +12,8 @@
 
 import torch
 from torch.quantization.fake_quantize import FakeQuantize
+from torchao.quantization.pt2e.observer import MinMaxObserver
+from torchao.quantization.pt2e.observer import PerChannelMinMaxObserver
 
 import nncf
 import nncf.torch.graph.operator_metatypes as om
@@ -68,8 +70,8 @@ class FXMinMaxAlgoBackend(MinMaxAlgoBackend):
         return []
 
     @property
-    def dropout_metatypes(self) -> list[OperatorMetatype]:
-        return [om.PTDropoutMetatype]
+    def noop_metatypes(self) -> list[type[OperatorMetatype]]:
+        return [om.PTDropoutMetatype, om.PTNoopMetatype]
 
     @property
     def conv_metatypes(self) -> list[OperatorMetatype]:
@@ -202,9 +204,9 @@ class FXMinMaxAlgoBackend(MinMaxAlgoBackend):
             )
 
         if per_channel:
-            observer = torch.ao.quantization.observer.PerChannelMinMaxObserver
+            observer = PerChannelMinMaxObserver
         else:
-            observer = torch.ao.quantization.observer.MinMaxObserver
+            observer = MinMaxObserver
 
         if dtype is TensorDataType.int8:
             level_high = 127
