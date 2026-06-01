@@ -12,6 +12,8 @@
 import inspect
 import os
 from collections import defaultdict
+from dataclasses import dataclass
+from dataclasses import field
 from typing import Callable
 from unittest.mock import patch
 
@@ -19,7 +21,6 @@ import numpy as np
 import openvino as ov
 import pandas as pd
 import pytest
-from attr import dataclass
 from openvino import opset13 as opset
 
 import nncf
@@ -99,7 +100,7 @@ DATA_BASED_SENSITIVITY_METRICS = (
 
 ALL_SENSITIVITY_METRICS = DATA_BASED_SENSITIVITY_METRICS + (SensitivityMetric.WEIGHT_QUANTIZATION_ERROR,)
 
-INT8_MODES = (CompressWeightsMode.INT8, CompressWeightsMode.INT8_SYM, CompressWeightsMode.INT8_ASYM)
+INT8_MODES = (CompressWeightsMode.INT8_SYM, CompressWeightsMode.INT8_ASYM)
 INT4_NF4_MODES = (CompressWeightsMode.INT4_SYM, CompressWeightsMode.INT4_ASYM, CompressWeightsMode.NF4)
 INT4_MODES = (CompressWeightsMode.INT4_SYM, CompressWeightsMode.INT4_ASYM)
 
@@ -118,7 +119,8 @@ class LMLinearModel(OVReferenceModel):
         input_1 = opset.parameter(self._input_shape, name="Input")
         weight_shape = self.get_weight_shape(transpose_b)
         data = self._rng.random(weight_shape).astype(np.float32)
-        matmul = opset.matmul(input_1, data, transpose_a=transpose_a, transpose_b=transpose_b, name="MatMul")
+        opset_constant = opset.constant(data, name="Weights")
+        matmul = opset.matmul(input_1, opset_constant, transpose_a=transpose_a, transpose_b=transpose_b, name="MatMul")
         result = opset.result(matmul, name="Result")
         result.get_output_tensor(0).set_names(set(["Result"]))
         model = ov.Model([result], [input_1])
@@ -684,10 +686,10 @@ def test_shared_gather_all_layers(all_layers):
 class QuantErrorDesc:
     weight: list[float]
     ref_error: int = 0
-    axis = (1,)
+    axis: tuple[int, ...] = (1,)
     name: str = ""
     atol: float = None
-    config: WeightCompressionConfig = WeightCompressionConfig()
+    config: WeightCompressionConfig = field(default_factory=WeightCompressionConfig)
 
     def __str__(self):
         prefix = "exact_match_" if self.ref_error == 0 else ""
@@ -828,18 +830,31 @@ CALCULATE_SCALE_DESCS = [
 ]
 
 
+@dataclass
+class ParamIgnoredScope:
+    name: str
+    ignored_scope: IgnoredScope
+    ref: set[str]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 @pytest.mark.parametrize(
-    ("ignored_scope", "num_compressed"),
+    "param",
     (
-        (IgnoredScope(types=["MatMul"]), 1),
-        (IgnoredScope(types=["Gather"]), 2),
-        (IgnoredScope(names=["MatMul_1"]), 2),
-        (IgnoredScope(patterns=["MatMul_\\d"]), 1),
+        ParamIgnoredScope(name="empty", ignored_scope=IgnoredScope(), ref=3),
+        ParamIgnoredScope(name="type", ignored_scope=IgnoredScope(types=["Gather"]), ref=2),
+        ParamIgnoredScope(name="name_const", ignored_scope=IgnoredScope(names=["matmul_1_data"]), ref=2),
+        ParamIgnoredScope(name="name_op", ignored_scope=IgnoredScope(names=["MatMul_1"]), ref=2),
+        ParamIgnoredScope(name="pattern_const", ignored_scope=IgnoredScope(patterns=[".*data"]), ref=0),
+        ParamIgnoredScope(name="pattern_op", ignored_scope=IgnoredScope(patterns=["Mat.*"]), ref=1),
     ),
+    ids=str,
 )
-def test_weight_compress_with_ignored_scope(ignored_scope, num_compressed):
+def test_weight_compress_with_ignored_scope(param: ParamIgnoredScope):
     model = IntegerModel(positive_w=False).ov_model
-    compressed_model = compress_weights(model, ignored_scope=ignored_scope)
+    compressed_model = compress_weights(model, ignored_scope=param.ignored_scope)
     ref_compressed_weights = TEST_MODELS[IntegerModel]
     act_num = 0
     for op in compressed_model.get_ops():
@@ -849,7 +864,7 @@ def test_weight_compress_with_ignored_scope(ignored_scope, num_compressed):
             and op.get_element_type() == ov.Type.u8
         ):
             act_num += 1
-    assert act_num == num_compressed
+    assert act_num == param.ref
 
 
 @pytest.mark.parametrize("desc", CALCULATE_SCALE_DESCS)
@@ -1033,7 +1048,7 @@ def test_call_max_var_criterion_with_dataset_awq_neg_group_size(mode):
 
 def test_data_type_for_num_weights(mocker):
     stub = mocker.stub()
-    params = WeightCompressionParameters(stub, stub, stub, stub, (1,), stub)
+    params = WeightCompressionParameters(stub, stub, stub, stub, (1,), stub, stub)
     assert isinstance(params.num_weights, np.uint64)
 
 
@@ -2178,7 +2193,7 @@ def test_disabled_optimized_compression(disabled):
     model = LMLinearModel(input_shape=[1, 24, hidden_dim]).ov_model
 
     def run_compression():
-        compress_weights(model, mode=CompressWeightsMode.INT8)
+        compress_weights(model, mode=CompressWeightsMode.INT8_ASYM)
 
     fn_to_patch = opt_fns.do_integer_quantization
     patch_path = f"nncf.openvino.optimized_functions.{fn_to_patch.__name__}"
@@ -2395,12 +2410,12 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
         return SequentialMatmulModel(transpose_a=transpose_a).ov_model
 
     @staticmethod
-    def get_model_for_test_scale_estimation():
-        return MatMul().ov_model
+    def get_model_for_test_scale_estimation(transpose_a: bool):
+        return MatMul(transpose_a=transpose_a).ov_model
 
     @staticmethod
-    def get_moe_model_for_test_scale_estimation():
-        return SimpleMoEModel().ov_model
+    def get_moe_model_for_test_scale_estimation(transpose_a: bool):
+        return SimpleMoEModel(transpose_a=transpose_a).ov_model
 
     @staticmethod
     def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool) -> ov.Model:

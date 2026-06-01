@@ -120,6 +120,8 @@ jobs:
   pytorch-cpu:
     timeout-minutes: 40
     runs-on: ubuntu-latest
+    # TODO(AlexanderDokuchaev): Enable with torchao=0.18.0 release
+    if: ${{ inputs.python_version != '3.14' }}
     defaults:
       run:
         shell: bash
@@ -143,7 +145,7 @@ jobs:
 
   pytorch-cuda:
     timeout-minutes: 40
-    runs-on: aks-linux-4-cores-28gb-gpu-tesla-t4
+    runs-on: aks-linux-6-cores-55gb-gpu-a10
     if: ${{ inputs.gpu_enabled == true }}
     defaults:
       run:
