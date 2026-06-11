@@ -46,6 +46,8 @@ class ScaleEstimation:
         initial_steps: int = 5,
         scale_steps: int = 10,
         weight_penalty: float = -1.0,
+        objective: str = "output_mse",
+        scale_search: str = "nncf",
     ):
         """
         :param subset_size: The number of samples for scale estimation.
@@ -53,12 +55,29 @@ class ScaleEstimation:
         :param scale_steps: The number of the steps for grid search scale rectification
                             from 1.0 to 1.0 - 0.05 * scale_step.
         :param weight_penalty: coefficient for penalty between fp and compressed weights. If -1 then doesn't apply.
+        :param objective: Metric minimized when selecting a scale candidate.
+            "output_mse" (default) keeps NNCF's behavior: MSE between the FP and compressed MatMul outputs
+            computed on real activations.
+            "llamacpp" reproduces llama.cpp's K-quant objective: a weighted weight-space SSE
+            Σ_l w_l · (x_l - dequant_l)^2 with w_l = imatrix_l · sqrt(sigma2 + x_l^2), where the imatrix term
+            is the per-channel activation importance and sigma2 is the per-group weight variance floor.
+        :param scale_search: Scale search strategy (only used when objective="llamacpp").
+            "nncf" (default) uses NNCF's closed-form estimate + grid search; "dsweep" reproduces
+            llama.cpp's make_qx_quants candidate-scale sweep with closed-form per-candidate refit.
         """
         super().__init__()
         self._subset_size = subset_size
         self._initial_steps = initial_steps
         self._scale_steps = scale_steps
         self._weight_penalty = weight_penalty
+        if objective not in ("output_mse", "llamacpp"):
+            msg = f"Unknown scale estimation objective '{objective}'. Expected 'output_mse' or 'llamacpp'."
+            raise nncf.ValidationError(msg)
+        self._objective = objective
+        if scale_search not in ("nncf", "dsweep"):
+            msg = f"Unknown scale_search '{scale_search}'. Expected 'nncf' or 'dsweep'."
+            raise nncf.ValidationError(msg)
+        self._scale_search = scale_search
 
     @property
     def available_backends(self) -> list[BackendType]:
@@ -152,6 +171,8 @@ class ScaleEstimation:
                 self._initial_steps,
                 self._scale_steps,
                 self._weight_penalty,
+                self._objective,
+                self._scale_search,
             )
             res[weight_name] = CompressedWeight(None, scale, zero_point, None)
 
@@ -168,6 +189,8 @@ class ScaleEstimation:
         initial_steps: int = 5,
         scale_steps: int = 10,
         weight_penalty: float = -1.0,
+        objective: str = "output_mse",
+        scale_search: str = "nncf",
     ) -> tuple[Tensor, Tensor | None]:
         """
         Calculates the quantization parameters for a given set of weights and activations.
@@ -191,6 +214,8 @@ class ScaleEstimation:
         :param scale_steps: The number of steps for refining the scale using a grid search. Defaults to 10.
         :param weight_penalty: Penalty coefficient applied to the difference between floating-point
             and quantized weights. A value of -1 disables the penalty. Defaults to -1.0.
+        :param objective: "output_mse" (default) minimizes MSE between FP and compressed MatMul outputs;
+            "llamacpp" minimizes llama.cpp's imatrix-weighted weight-space SSE.
         :return: A tensor containing the calculated quantization scales and zero points if applicable.
         """
         reduction_axis = reduction_axes[0]
@@ -200,6 +225,23 @@ class ScaleEstimation:
         X = X.astype(TensorDataType.float32)
         weight = weight.astype(TensorDataType.float32)
         eps = fns.finfo(weight).eps
+
+        # llama.cpp imatrix statistic: mean over squared activation E[x^2], the quantity
+        # llama-imatrix accumulates, in place of NNCF's peak magnitude `s` (max|x|).
+        imatrix = None
+        if objective == "llamacpp":
+            sq_mean = getattr(statistics, "sq_mean_values", None)
+            if not sq_mean:
+                msg = (
+                    "The 'llamacpp' objective requires per-sample E[x^2] activation statistics "
+                    "(MeanSquareReducer / WCTensorStatistic.sq_mean_values), which the current backend "
+                    "did not collect. Use a backend that registers the squared-activation branch."
+                )
+                raise nncf.InternalError(msg)
+            # E[x^2]: the collector recorded mean(x^2) over batch+sequence per sample (MeanSquareReducer).
+            # Average over samples -> per-channel energy, layout [..., HiddenDim] matching `s`.
+            sq = fns.stack(sq_mean).astype(TensorDataType.float32)  # [Samples, (maybe Experts,) HiddenDim]
+            imatrix = fns.mean(sq, axis=0)
         is_3d_weight = len(weight.shape) == 3
 
         was_transposed = False
@@ -233,6 +275,11 @@ class ScaleEstimation:
         s = fns.unsqueeze(s, -2)
         s, _ = reshape_weight_for_grouped_quantization(s, reduction_axis, group_size)
 
+        if imatrix is not None:
+            # Match the grouped layout applied to `s` so it broadcasts over the weight groups.
+            imatrix = fns.unsqueeze(imatrix, -2)
+            imatrix, _ = reshape_weight_for_grouped_quantization(imatrix, reduction_axis, group_size)
+
         weight, _ = reshape_weight_for_grouped_quantization(weight, reduction_axis, group_size)
 
         # all weight in group has importance based on corresponding input activations
@@ -248,18 +295,55 @@ class ScaleEstimation:
 
         X, _ = reshape_weight_for_grouped_quantization(X, -2, group_size)
         fp_outs = fns.matmul(fns.moveaxis(weight, -2, -3), X)
-        q_outs = fns.matmul(fns.moveaxis(q_weights, -2, -3), X)
 
-        # metric for minimization with shape [C_OUT, N_GROUPS], N_GROUPS = C_IN / GROUP_SIZE
-        # For 3D weights, it is [Batch Size, C_OUT, N_GROUPS]
-        min_max_scale_diffs = fns.mean((fp_outs - q_outs) ** 2, axis=-1)
-        min_max_scale_diffs = fns.moveaxis(min_max_scale_diffs, -1, -2)
+        # llama.cpp K-quant weighting: imatrix importance (mean(x^2))
+        # scaled by a local term sqrt(sigma2 + w^2), where sigma2 is the per-group weight variance floor. You can imagine this as like a preturn for very small or 0 weights
+        # Shape matches the grouped weight: [..., C_OUT, N_GROUPS, GROUP_SIZE].
+        if objective == "llamacpp":
+            sigma2 = fns.mean(weight**2, axis=-1, keepdims=True)
+            llamacpp_weight = imatrix * fns.power(sigma2 + weight**2, 0.5)
+        else:
+            llamacpp_weight = None
 
-        if weight_penalty > 0.0:
-            min_max_scale_diffs += weight_penalty * fns.mean((q_weights - weight) ** 2, axis=-1)
+        def compute_diffs(q_w: Tensor) -> Tensor:
+            # Metric for minimization with shape [C_OUT, N_GROUPS], N_GROUPS = C_IN / GROUP_SIZE.
+            # For 3D weights, it is [Batch Size, C_OUT, N_GROUPS].
+            if objective == "llamacpp":
+                # llama.cpp objective: imatrix-weighted weight-space SSE Σ_l w_l * (dequant_l - w_l)^2.
+                diffs = fns.sum(llamacpp_weight * (q_w - weight) ** 2, axis=-1)
+            else:
+                # NNCF default: MSE between FP and compressed MatMul outputs on real activations.
+                q_outs = fns.matmul(fns.moveaxis(q_w, -2, -3), X)
+                diffs = fns.mean((fp_outs - q_outs) ** 2, axis=-1)
+                diffs = fns.moveaxis(diffs, -1, -2)
+            if weight_penalty > 0.0:
+                diffs += weight_penalty * fns.mean((q_w - weight) ** 2, axis=-1)
+            return diffs
+
+        # Experimental: llama.cpp's candidate-scale sweep as an alternative to NNCF's closed-form + grid
+        # search. For each candidate scale it assigns integers, then per group refits via weighted least
+        # squares — d* alone for symmetric (make_qx_quants https://github.com/ggml-org/llama.cpp/blob/18ef86ecec723361362a332a79b4d913fd724d40/ggml/src/ggml-quants.c#L570), or jointly (d, m) for asymmetric (make_qkx2 https://github.com/ggml-org/llama.cpp/blob/18ef86ecec723361362a332a79b4d913fd724d40/ggml/src/ggml-quants.c#L741),
+        # returning a refined zero point — and keeps the candidate with the lowest weighted error, seeded
+        # with the incoming base so it can never return something worse. Ignores initial_steps/scale_steps.
+        if objective == "llamacpp" and scale_search == "dsweep":
+            result_scale, zp = _llamacpp_dsweep_scale(weight, llamacpp_weight, scale, config, zp)
+            if config.group_size == -1:
+                result_scale = fns.squeeze(result_scale, axis=-2)
+                if zp is not None:
+                    zp = fns.squeeze(zp, axis=-2)
+            if was_transposed:
+                if config.group_size == -1:
+                    result_scale = fns.moveaxis(result_scale, -1, -2)
+                    if zp is not None:
+                        zp = fns.moveaxis(zp, -1, -2)
+                else:
+                    result_scale = fns.moveaxis(result_scale, (-1, -2, -3), (-2, -3, -1))
+                    if zp is not None:
+                        zp = fns.moveaxis(zp, (-1, -2, -3), (-2, -3, -1))
+            return result_scale, zp
 
         # Baseline values ensure correct behavior when initial_steps=0 and/or scale_steps=0.
-        best_diffs = min_max_scale_diffs
+        best_diffs = compute_diffs(q_weights)
         result_scale = scale
 
         scale_sign = scale / fns.abs(scale)
@@ -285,12 +369,7 @@ class ScaleEstimation:
                     precomputed_zero_point=zp,
                 )
 
-            q_outs = fns.matmul(fns.moveaxis(q_weights_, -2, -3), X)
-
-            ideal_scale_diffs = fns.mean((fp_outs - q_outs) ** 2, axis=-1)
-            ideal_scale_diffs = fns.moveaxis(ideal_scale_diffs, -1, -2)
-            if weight_penalty > 0.0:
-                ideal_scale_diffs += weight_penalty * fns.mean((q_weights_ - weight) ** 2, axis=-1)
+            ideal_scale_diffs = compute_diffs(q_weights_)
 
             mask = (ideal_scale_diffs > best_diffs).astype(best_diffs.dtype)
 
@@ -345,11 +424,7 @@ class ScaleEstimation:
                     precomputed_zero_point=zp,
                 )
 
-            q_outs = fns.matmul(fns.moveaxis(q_weights_, -2, -3), X)
-            ideal_scale_diffs = fns.mean((fp_outs - q_outs) ** 2, axis=-1)
-            ideal_scale_diffs = fns.moveaxis(ideal_scale_diffs, -1, -2)
-            if weight_penalty > 0.0:
-                ideal_scale_diffs += weight_penalty * fns.mean((q_weights_ - weight) ** 2, axis=-1)
+            ideal_scale_diffs = compute_diffs(q_weights_)
 
             mask = (ideal_scale_diffs > best_diffs).astype(best_diffs.dtype)
 
@@ -375,6 +450,114 @@ class ScaleEstimation:
                     zp = fns.moveaxis(zp, (-1, -2, -3), (-2, -3, -1))
 
         return result_scale, zp
+
+
+def _llamacpp_dsweep_scale(
+    weight: Tensor,
+    importance: Tensor,
+    base_scale: Tensor,
+    config: WeightCompressionConfig,
+    base_zero_point: Tensor | None,
+    n_bits: int = 4,
+) -> tuple[Tensor, Tensor | None]:
+    """
+    llama.cpp candidate-scale sweep (experimental, llamacpp objective only).
+
+    Mirrors make_qx_quants (symmetric) / make_qkx2 (asymmetric): for a grid of candidate scales around
+    the base scale it obtains integer codes from NNCF's quantization functions, then per group solves a
+    weighted least-squares fit of weight ≈ scale x quantized_weight + zp (importance weighting
+    w = imatrix·sqrt(sigma2 + weight²)) and keeps the candidate with the lowest weighted SSE.
+
+    - Symmetric (base_zero_point is None): zp is forced to 0, so
+      scale* = Σ w·code·weight / Σ w·code² (the make_qx_quants refit). NNCF's symmetric scale is *signed*,
+      so the refit and all validity checks operate on scale magnitude, never its sign.
+    - Asymmetric: jointly solve (scale, zp) from the 2x2 normal equations, then map to NNCF's
+      convention dequant = scale·(code - zero_point), i.e. zero_point = round(-zp/scale) clamped
+      to [0, 2^n_bits - 1].
+
+    Shapes: weight/importance [..., N_GROUPS, GROUP_SIZE]; base_scale/base_zero_point [..., N_GROUPS, 1].
+    Returns (refined_scale, refined_zero_point); refined_zero_point is None for symmetric mode.
+    """
+    eps = fns.finfo(weight).eps
+    symmetric_max_level = 2 ** (n_bits - 1) - 1  # spacing reference for the sweep geometry, e.g. 7 for 4-bit
+    asym_code_max = 2**n_bits - 1  # asym code range upper bound, e.g. 15 for 4-bit
+    is_asymmetric = config.is_asym_mode
+
+    def weighted_reconstruction_error(cand_scale, cand_zero_point):
+        """Re-quantize+dequantize with these params and return the importance-weighted SSE per group.
+
+        Crucially this measures the error of the codes the downstream quantizer will *actually* assign
+        for (cand_scale, cand_zero_point), not the codes from some other scale — so the scale we keep is
+        always validated against its own quantization.
+        """
+        if config.is_integer:
+            recon = integer_quantize_dequantize_weight(
+                weight, config, precomputed_scale=cand_scale, precomputed_zero_point=cand_zero_point
+            )
+        else:
+            recon = float_quantize_dequantize_weight(weight, config, precomputed_scale=cand_scale)
+        return fns.sum(importance * (weight - recon) ** 2, axis=-1, keepdims=True)
+
+    # Seed with the incoming base (scale, zero_point): the sweep can only improve on it, never return worse.
+    best_error = weighted_reconstruction_error(base_scale, base_zero_point)
+    best_scale = base_scale
+    best_zero_point = base_zero_point
+
+    # Mirror llama.cpp's `is` loop: iscale = (nmax + 0.1*is)/max  =>  scale = base * nmax/(nmax + 0.1*is).
+    for step_idx in range(-9, 10):
+        scale_factor = symmetric_max_level / (symmetric_max_level + 0.1 * step_idx)
+        cand_scale = base_scale * scale_factor
+
+        if config.is_integer:
+            compressed = do_integer_quantization(
+                weight, config, precomputed_scale=cand_scale, precomputed_zero_point=base_zero_point
+            )
+        else:
+            compressed = do_float_quantization(weight, config, precomputed_scale=cand_scale)
+        # Raw integer codes (unsigned for asym, signed/centered for sym), [..., N_GROUPS, GROUP_SIZE].
+        codes = compressed.get_unscaled_tensor().astype(TensorDataType.float32)
+
+        sum_w = fns.sum(importance, axis=-1, keepdims=True)
+        sum_w_code = fns.sum(importance * codes, axis=-1, keepdims=True)
+        sum_w_code_sq = fns.sum(importance * codes * codes, axis=-1, keepdims=True)
+        sum_w_weight = fns.sum(importance * weight, axis=-1, keepdims=True)
+        sum_w_code_weight = fns.sum(importance * codes * weight, axis=-1, keepdims=True)
+
+        if is_asymmetric:
+            # Joint (scale, zp) from [[Σwcc, Σwc], [Σwc, Σw]] [scale, zp]^T = [Σwcx, Σwx]^T.
+            det = sum_w_code_sq * sum_w - sum_w_code * sum_w_code
+            cand_scale_refit = (sum_w_code_weight * sum_w - sum_w_code * sum_w_weight) / (det + eps)
+            cand_zp = (sum_w_code_sq * sum_w_weight - sum_w_code * sum_w_code_weight) / (det + eps)
+            cand_zero_point = fns.round(-cand_zp / (cand_scale_refit + eps))
+            cand_zero_point = fns.clip(cand_zero_point, 0.0, asym_code_max).astype(base_zero_point.dtype)
+        else:
+            cand_scale_refit = sum_w_code_weight / (sum_w_code_sq + eps)
+            cand_zero_point = None
+
+        # Reject degenerate refits before they can win the argmin. Asymmetric scales are strictly
+        # positive, so a non-positive refit is degenerate; symmetric scales are signed, so there the
+        # test is on magnitude and a negative refit is legitimate and must keep its sign.
+        if is_asymmetric:
+            is_valid = (cand_scale_refit > eps).astype(weight.dtype)
+        else:
+            is_valid = (fns.abs(cand_scale_refit) > eps).astype(weight.dtype)
+        cand_scale_refit = is_valid * cand_scale_refit + (1.0 - is_valid) * base_scale
+        if is_asymmetric:
+            cand_zero_point = (
+                is_valid * cand_zero_point + (1.0 - is_valid) * base_zero_point.astype(cand_zero_point.dtype)
+            ).astype(base_zero_point.dtype)
+
+        # Validate the refit against its OWN quantization, then keep it only if it beats the best so far.
+        error = weighted_reconstruction_error(cand_scale_refit, cand_zero_point)
+        is_better = (error < best_error).astype(weight.dtype)
+        best_error = is_better * error + (1.0 - is_better) * best_error
+        best_scale = is_better * cand_scale_refit + (1.0 - is_better) * best_scale
+        if is_asymmetric:
+            best_zero_point = (is_better * cand_zero_point + (1.0 - is_better) * best_zero_point).astype(
+                base_zero_point.dtype
+            )
+
+    return best_scale, best_zero_point
 
 
 def get_target_zero_mask(compressed_weights: Tensor, zp: Tensor | None = None) -> tuple[Tensor, Tensor]:

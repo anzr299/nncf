@@ -420,6 +420,8 @@ class WeightCompression(Algorithm):
                 scale_estimation_params.initial_steps,
                 scale_estimation_params.scale_steps,
                 scale_estimation_params.weight_penalty,
+                objective=scale_estimation_params.objective,
+                scale_search=scale_estimation_params.scale_search,
             )
 
         if self._codebook_estimation:

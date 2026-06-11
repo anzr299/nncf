@@ -327,12 +327,20 @@ class AdvancedScaleEstimationParameters:
     :type scale_steps: int
     :param weight_penalty: coefficient for penalty between fp and compressed weights. If -1 then doesn't apply.
     :type weight_penalty: float
+    :param objective: Loss function Metric minimized when selecting a scale candidate. "output_mse" (default) uses MSE
+        between FP and compressed MatMul outputs; "llamacpp" uses llama.cpp's imatrix-weighted weight-space SSE.
+    :type objective: str
+    :param scale_search: Scale grid search strategy used with objective="llamacpp". "nncf" (default) uses NNCF's
+        closed-form + grid search; "dsweep" reproduces llama.cpp's candidate-scale sweep.
+    :type scale_search: str
     """
 
     subset_size: int = 64
     initial_steps: int = 5
     scale_steps: int = 5
     weight_penalty: float = -1.0
+    objective: str = "output_mse"
+    scale_search: str = "nncf"
 
 
 @api()

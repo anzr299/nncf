@@ -25,6 +25,7 @@ from nncf.common.graph.transformations.commands import TargetType
 from nncf.common.graph.transformations.layout import TransformationLayout
 from nncf.common.quantization.structs import QuantizationScheme
 from nncf.common.tensor_statistics.collectors import MeanReducer
+from nncf.common.tensor_statistics.collectors import MeanSquareReducer
 from nncf.common.tensor_statistics.collectors import NoopAggregator
 from nncf.common.tensor_statistics.collectors import ShapeReducer
 from nncf.common.tensor_statistics.collectors import TensorCollector
@@ -146,9 +147,15 @@ class PTWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
 
     def mean_statistic_collector(self, reduction_axes: tuple[int], subset_size: int | None = None) -> TensorCollector:
         mean_reducer = MeanReducer(reduction_axes)
+        sq_mean_reducer = MeanSquareReducer(reduction_axes)
         shape_reducer = ShapeReducer()
         collector = TensorCollector(WCTensorStatistic)
         collector.register_statistic_branch(WCTensorStatistic.MEAN_STAT, mean_reducer, NoopAggregator(subset_size))
+        # Per-sample E[x^2] for the llama.cpp imatrix. Collected alongside the mean; the objective uses
+        # it only when requested, so the extra branch is cheap and harmless for other algorithms.
+        collector.register_statistic_branch(
+            WCTensorStatistic.SQ_MEAN_STAT, sq_mean_reducer, NoopAggregator(subset_size)
+        )
         collector.register_statistic_branch(WCTensorStatistic.SHAPE_STAT, shape_reducer, NoopAggregator(subset_size))
         return collector
 

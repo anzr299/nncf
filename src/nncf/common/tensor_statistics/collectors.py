@@ -516,6 +516,16 @@ class MeanReducer(TensorReducerBase):
         return [fns.mean(x_, reduction_axes, keepdims=self._keepdims)]
 
 
+class MeanSquareReducer(TensorReducerBase):
+    """mean of squared activations, E[x^2] over the reduction axes.
+    """
+
+    def _reduce_out_of_place(self, x: list[Tensor]) -> list[Tensor]:
+        x_ = x[0]
+        reduction_axes = determine_reduction_axes(x_.ndim, self._axes, self._axes_mode)
+        return [fns.mean(x_ * x_, reduction_axes, keepdims=self._keepdims)]
+
+
 class MeanVarianceReducer(TensorReducerBase):
     def _reduce_out_of_place(self, x: list[Tensor]) -> list[Tensor]:
         x_ = x[0]

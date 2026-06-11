@@ -260,9 +260,14 @@ class MeanMagnitudeTensorStatistic(TensorStatistic):
 class WCTensorStatistic(TensorStatistic):
     MEAN_STAT = "mean_values"
     SHAPE_STAT = "shape_values"
+    SQ_MEAN_STAT = "sq_mean_values"
 
     mean_values: list[Tensor]
     shape_values: list[tuple[Tensor, ...]]
+    # HACK per-sample E[x^2] (mean of squared activations over batch+sequence). Populated only when
+    # the collector registers a MeanSquareReducer branch (llama.cpp-style imatrix). None otherwise, so
+    # existing callers that build WCTensorStatistic with only mean/shape stay valid.
+    sq_mean_values: list[Tensor] | None = None
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, WCTensorStatistic):
@@ -278,7 +283,7 @@ class WCTensorStatistic(TensorStatistic):
     def _get_serialized_data(self) -> dict[str, Tensor]:
         backend = self.mean_values[0].backend
         device = self.mean_values[0].device
-        return {
+        data = {
             self.MEAN_STAT: fns.stack(self.mean_values),
             self.SHAPE_STAT: fns.tensor(
                 self.shape_values,
@@ -287,10 +292,15 @@ class WCTensorStatistic(TensorStatistic):
                 device=device,
             ),
         }
+        if self.sq_mean_values is not None:
+            data[self.SQ_MEAN_STAT] = fns.stack(self.sq_mean_values)
+        return data
 
     def load_data(self, loaded_data: dict[str, Tensor]) -> None:
         self.shape_values = [tuple(shape) for shape in loaded_data[self.SHAPE_STAT]]
         self.mean_values = [it for it in loaded_data[self.MEAN_STAT]]
+        if self.SQ_MEAN_STAT in loaded_data:
+            self.sq_mean_values = [it for it in loaded_data[self.SQ_MEAN_STAT]]
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> TensorStatistic:
@@ -304,4 +314,8 @@ class WCTensorStatistic(TensorStatistic):
         else:
             shape_values = []
 
-        return cls(mean_values=mean_values, shape_values=shape_values)
+        sq_mean_values = None
+        if cls.SQ_MEAN_STAT in config and config[cls.SQ_MEAN_STAT] is not None:
+            sq_mean_values = [fns.squeeze(it) for it in config[cls.SQ_MEAN_STAT]]
+
+        return cls(mean_values=mean_values, shape_values=shape_values, sq_mean_values=sq_mean_values)
