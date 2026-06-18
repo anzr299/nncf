@@ -936,7 +936,7 @@ class HAWQAggregator(AggregatorBase):
 
     def reset(self) -> None:
         self._collected_samples = 0
-        self._container: Tensor = Tensor(0.0)  # type: ignore[assignment]
+        self._container = Tensor(0.0)
 
     def _aggregate_impl(self) -> Tensor:
         return self._container * 2 / self._collected_samples
