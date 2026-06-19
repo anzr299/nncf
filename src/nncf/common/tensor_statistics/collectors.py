@@ -928,8 +928,6 @@ class HAWQAggregator(AggregatorBase):
 
     def _register_reduced_input_impl(self, x: Tensor) -> None:
         trace = fns.sum(fns.multiply(x, x))
-        # NOTE: average trace?? divide by number of diagonal elements
-        # TODO(dlyakhov): revise this formula as possibly it is with an error; adopted from previous HAWQ implementation
         # We normalize the trace by the number of elements in the tensor so that larger matrices do not dominate
         # the sensitivity scores
         self._container += trace / x.size
