@@ -121,7 +121,7 @@ class QuantizationAccuracyRestorerReport:
     @property
     def removed_quantizers(self) -> list[NNCFNode]:
         """
-        Returns all removed quantizers during accuracy-aware algorithm.
+        All removed quantizers during accuracy-aware algorithm.
         """
         quantizers = []
         for group in self.removed_groups:
@@ -131,7 +131,7 @@ class QuantizationAccuracyRestorerReport:
     @property
     def reverted_operations(self) -> list[NNCFNode]:
         """
-        Returns all operations which were reverted to original precision
+        All operations which were reverted to original precision
         during accuracy-aware algorithm.
         """
         operations = []
