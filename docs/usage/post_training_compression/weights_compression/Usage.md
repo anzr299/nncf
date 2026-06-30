@@ -27,8 +27,8 @@ By default, the algorithm applies asymmetric 8-bit integer quantization (INT8_AS
 
 | Compression Mode | Element type | Scale type | Granularity              | Supported backends                | Description                |
 |------------------|--------------|------------|--------------------------|-----------------------------------|----------------------------|
-| INT8_ASYM        | INT8         | FP16       | Per-channel              | OpenVINO, PyTorch, ONNX, Torch FX | [Asymmetric quantization](/docs/usage/Quantization.md#asymmetric-quantization) |
-| INT8_SYM         | INT8         | FP16       | Per-channel              | OpenVINO, PyTorch, ONNX, Torch FX | [Symmetric quantization](/docs/usage/Quantization.md#symmetric-quantization) |
+| INT8_ASYM        | INT8         | FP16       | Per-channel              | OpenVINO, PyTorch, ONNX, TorchFX | [Asymmetric quantization](/docs/usage/Quantization.md#asymmetric-quantization) |
+| INT8_SYM         | INT8         | FP16       | Per-channel              | OpenVINO, PyTorch, ONNX, TorchFX | [Symmetric quantization](/docs/usage/Quantization.md#symmetric-quantization) |
 
 #### Mixed precision modes
 
