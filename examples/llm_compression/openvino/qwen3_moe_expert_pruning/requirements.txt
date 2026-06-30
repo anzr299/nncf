@@ -1,0 +1,4 @@
+datasets
+optimum-intel[openvino]
+transformers
+lm-eval>=0.4.0
