@@ -46,8 +46,8 @@ NNCF can automatically distribute precision assignments based on quantization se
 
 | Compression Mode | Element type | Scale type | Granularity              | Supported backends            | Description |
 |------------------|--------------|------------|--------------------------|-------------------------------|-------------|
-| INT4_SYM         | INT4         | FP16       | Per-channel / Group-wise | OpenVINO, PyTorch, ONNX, Torch FX | [Symmetric quantization](/docs/usage/Quantization.md#symmetric-quantization) |
-| INT4_ASYM        | INT4         | FP16       | Per-channel / Group-wise | OpenVINO, PyTorch, ONNX, Torch FX | [Asymmetric quantization](/docs/usage/Quantization.md#asymmetric-quantization) |
+| INT4_SYM         | INT4         | FP16       | Per-channel / Group-wise | OpenVINO, PyTorch, ONNX, TorchFX | [Symmetric quantization](/docs/usage/Quantization.md#symmetric-quantization) |
+| INT4_ASYM        | INT4         | FP16       | Per-channel / Group-wise | OpenVINO, PyTorch, ONNX, TorchFX | [Asymmetric quantization](/docs/usage/Quantization.md#asymmetric-quantization) |
 | NF4              | FP32         | FP16       | Per-channel / Group-wise | OpenVINO                      | [NormalFloat-4](https://arxiv.org/pdf/2305.14314v1.pdf) lookup table with 16 FP32 values |
 | CODEBOOK         | Any          | FP16       | Per-channel / Group-wise | OpenVINO                      | Arbitrary lookup table (codebook) |
 | CB4              | E4M3         | FP16       | Per-channel / Group-wise | OpenVINO                      | A fixed lookup table with 16 E4M3 values based on NF4 values |
