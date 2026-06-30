@@ -25,8 +25,8 @@ The Weights Compression algorithm is aimed at compressing the weights of the mod
 
 By default, the algorithm applies asymmetric 8-bit integer quantization (INT8_ASYM mode) to all weights. For symmetric quantization without zero point, the INT8_SYM mode is also available. Both modes typically preserve model accuracy while providing decent performance improvements.
 
-| Compression Mode | Element type | Scale type | Granularity              | Supported backends                | Description                |
-|------------------|--------------|------------|--------------------------|-----------------------------------|----------------------------|
+| Compression Mode | Element type | Scale type | Granularity              | Supported backends               | Description                |
+|------------------|--------------|------------|--------------------------|----------------------------------|----------------------------|
 | INT8_ASYM        | INT8         | FP16       | Per-channel              | OpenVINO, PyTorch, ONNX, TorchFX | [Asymmetric quantization](/docs/usage/Quantization.md#asymmetric-quantization) |
 | INT8_SYM         | INT8         | FP16       | Per-channel              | OpenVINO, PyTorch, ONNX, TorchFX | [Symmetric quantization](/docs/usage/Quantization.md#symmetric-quantization) |
 
@@ -44,17 +44,17 @@ Default backup precision:
 
 NNCF can automatically distribute precision assignments based on quantization sensitivity using the `ratio` parameter. For example, with `ratio=0.9`, layers (excluding special ones) accounting for 90% of model weights receive primary precision, while the remaining layers use backup precision. This distribution minimizes overall quality deterioration by prioritizing less sensitive layers for lower precision.
 
-| Compression Mode | Element type | Scale type | Granularity              | Supported backends            | Description |
-|------------------|--------------|------------|--------------------------|-------------------------------|-------------|
+| Compression Mode | Element type | Scale type | Granularity              | Supported backends               | Description |
+|------------------|--------------|------------|--------------------------|----------------------------------|-------------|
 | INT4_SYM         | INT4         | FP16       | Per-channel / Group-wise | OpenVINO, PyTorch, ONNX, TorchFX | [Symmetric quantization](/docs/usage/Quantization.md#symmetric-quantization) |
 | INT4_ASYM        | INT4         | FP16       | Per-channel / Group-wise | OpenVINO, PyTorch, ONNX, TorchFX | [Asymmetric quantization](/docs/usage/Quantization.md#asymmetric-quantization) |
-| NF4              | FP32         | FP16       | Per-channel / Group-wise | OpenVINO                      | [NormalFloat-4](https://arxiv.org/pdf/2305.14314v1.pdf) lookup table with 16 FP32 values |
-| CODEBOOK         | Any          | FP16       | Per-channel / Group-wise | OpenVINO                      | Arbitrary lookup table (codebook) |
-| CB4              | E4M3         | FP16       | Per-channel / Group-wise | OpenVINO                      | A fixed lookup table with 16 E4M3 values based on NF4 values |
-| MXFP4            | E2M1         | E8M0       | Group-wise (32)          | OpenVINO                      | [MX-compliant FP4](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
-| MXFP8_E4M3       | E4M3         | E8M0       | Group-wise (32)          | OpenVINO                      | [MX-compliant FP8](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
-|   FP8_E4M3       | E4M3         | FP16       | Per-channel / Group-wise | OpenVINO, ONNX                | [FP8](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
-|   FP4            | E2M1         | FP16       | Per-channel / Group-wise | OpenVINO                      | [FP4](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
+| NF4              | FP32         | FP16       | Per-channel / Group-wise | OpenVINO                         | [NormalFloat-4](https://arxiv.org/pdf/2305.14314v1.pdf) lookup table with 16 FP32 values |
+| CODEBOOK         | Any          | FP16       | Per-channel / Group-wise | OpenVINO                         | Arbitrary lookup table (codebook) |
+| CB4              | E4M3         | FP16       | Per-channel / Group-wise | OpenVINO                         | A fixed lookup table with 16 E4M3 values based on NF4 values |
+| MXFP4            | E2M1         | E8M0       | Group-wise (32)          | OpenVINO                         | [MX-compliant FP4](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
+| MXFP8_E4M3       | E4M3         | E8M0       | Group-wise (32)          | OpenVINO                         | [MX-compliant FP8](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
+|   FP8_E4M3       | E4M3         | FP16       | Per-channel / Group-wise | OpenVINO, ONNX                   | [FP8](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
+|   FP4            | E2M1         | FP16       | Per-channel / Group-wise | OpenVINO                         | [FP4](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf) |
 | NVFP4            | E2M1         | E4M3 per group / FP32 per weight | Group-wise (16)          | OpenVINO              | [NVFP4](https://arxiv.org/abs/2509.25149) |
 
 **Note**: Granularity refers to the scope of elements sharing quantization parameters. "Per-channel" applies different parameters for each output channel, while "Group-wise" divides weights into groups (e.g., group_size=128) that share the same parameters.
