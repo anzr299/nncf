@@ -92,3 +92,28 @@ class ExpertReductionBackend(ABC):
         :param block: The MoE block to reduce.
         :param surviving_experts: Sorted indices of experts to keep, shape ``[num_keep]``.
         """
+
+    @abstractmethod
+    def merge_block(
+        self,
+        model: TModel,
+        graph: NNCFGraph,
+        block: MoEBlockInfo,
+        groups: list,
+        saliency: np.ndarray,
+        neuron_activations: np.ndarray = None,
+    ) -> None:
+        """
+        Rewrites an MoE block by merging each group of experts into its centroid (REAM).
+
+        Each group's experts are aligned to the centroid and averaged with saliency
+        weights; the block is then shrunk to the centroids.
+
+        :param model: Backend-specific model.
+        :param graph: Model graph.
+        :param block: The MoE block to reduce.
+        :param groups: Grouping where ``groups[g][0]`` is the centroid expert index.
+        :param saliency: Per-expert saliency used as merge weights.
+        :param neuron_activations: Optional per-neuron activation signatures for the C_act
+            alignment term.
+        """

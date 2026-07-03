@@ -101,24 +101,32 @@ class ExpertReduction:
         ratio: float = 0.25,
         method: str = "reap",
         subset_size: int = 128,
+        group_size: int = 16,
+        sequential: bool | None = None,
         renormalize_router_weights: bool = False,
     ):
         """
         :param ratio: Fraction of experts to remove per MoE layer (0 < ratio < 1).
-        :param method: Reduction method; currently ``"reap"`` (pruning).
-        :param subset_size: Number of calibration samples used to estimate saliency.
+        :param method: Reduction method; ``"reap"`` (pruning) or ``"ream"`` (merging).
+        :param subset_size: Number of calibration samples used to estimate statistics.
+        :param group_size: REAM only - max experts a centroid may absorb (``C``).
+        :param sequential: REAM only - whether to recompute statistics on the partially
+            merged model before each block (sequential merging). Defaults to True for
+            ``"ream"`` and is ignored for ``"reap"``.
         :param renormalize_router_weights: Whether to renormalize the top-k router
             probabilities per token before using them as saliency gate weights.
         """
         if not 0.0 < ratio < 1.0:
             msg = f"ratio must be in (0, 1), got {ratio}."
             raise ValueError(msg)
-        if method != "reap":
-            msg = f"Unsupported expert-reduction method: {method!r}. Only 'reap' is currently implemented."
+        if method not in ("reap", "ream"):
+            msg = f"Unsupported expert-reduction method: {method!r}. Expected 'reap' or 'ream'."
             raise nncf.UnsupportedModelError(msg)
         self._ratio = ratio
         self._method = method
         self._subset_size = subset_size
+        self._group_size = group_size
+        self._sequential = (method == "ream") if sequential is None else sequential
         self._renormalize_router_weights = renormalize_router_weights
 
     def _set_backend_entity(self, model: TModel):
@@ -138,8 +146,6 @@ class ExpertReduction:
         :param dataset: Calibration dataset.
         :return: The model with reduced experts.
         """
-        from nncf.quantization.algorithms.expert_reduction.reap import select_experts_to_keep
-
         backend = self._set_backend_entity(model)
         graph = backend.create_graph(model)
 
@@ -148,18 +154,62 @@ class ExpertReduction:
             nncf_logger.warning("No MoE blocks were found in the model; expert reduction is skipped.")
             return model
 
-        statistics = backend.collect_statistics(
-            model, graph, blocks, dataset, self._subset_size, self._renormalize_router_weights
-        )
+        collect_similarity = self._method == "ream"
 
-        for block in track(blocks, description="Applying expert reduction"):
-            num_keep = max(block.top_k, round(block.num_experts * (1.0 - self._ratio)))
-            if num_keep >= block.num_experts:
-                nncf_logger.info(f"Block {block.block_id}: ratio leaves all {block.num_experts} experts; skipping.")
-                continue
-            saliency = statistics[block.block_id].saliency()
-            surviving_experts = select_experts_to_keep(saliency, num_keep)
-            nncf_logger.info(f"Block {block.block_id}: keeping {num_keep}/{block.num_experts} experts.")
-            backend.reduce_block(model, graph, block, surviving_experts)
+        if self._sequential:
+            # Sequential merging: recompute statistics on the partially-reduced model before
+            # each block, so later blocks see the already-reduced upstream activations.
+            for block in track(blocks, description=f"Applying {self._method.upper()}"):
+                graph = backend.create_graph(model)
+                stats = backend.collect_statistics(
+                    model,
+                    graph,
+                    [block],
+                    dataset,
+                    self._subset_size,
+                    self._renormalize_router_weights,
+                    collect_similarity=collect_similarity,
+                )
+                self._reduce_one_block(backend, model, graph, block, stats[block.block_id])
+        else:
+            # One-shot: collect statistics for all blocks on the original model, then reduce.
+            statistics = backend.collect_statistics(
+                model,
+                graph,
+                blocks,
+                dataset,
+                self._subset_size,
+                self._renormalize_router_weights,
+                collect_similarity=collect_similarity,
+            )
+            for block in track(blocks, description=f"Applying {self._method.upper()}"):
+                self._reduce_one_block(backend, model, graph, block, statistics[block.block_id])
 
         return model
+
+    def _reduce_one_block(self, backend, model, graph, block, block_stats) -> None:
+        """
+        Reduces a single MoE block according to the configured method.
+        """
+        from nncf.quantization.algorithms.expert_reduction.ream import combine_similarity_matrices
+        from nncf.quantization.algorithms.expert_reduction.ream import pseudo_group
+        from nncf.quantization.algorithms.expert_reduction.reap import select_experts_to_keep
+
+        num_keep = max(block.top_k, round(block.num_experts * (1.0 - self._ratio)))
+        if num_keep >= block.num_experts:
+            nncf_logger.info(f"Block {block.block_id}: ratio leaves all {block.num_experts} experts; skipping.")
+            return
+
+        saliency = block_stats.saliency()
+        if self._method == "reap":
+            surviving_experts = select_experts_to_keep(saliency, num_keep)
+            nncf_logger.info(f"Block {block.block_id}: pruning to {num_keep}/{block.num_experts} experts.")
+            backend.reduce_block(model, graph, block, surviving_experts)
+        else:  # ream
+            similarity = combine_similarity_matrices(
+                [block_stats.gate_logit_similarity(), block_stats.gated_output_similarity()]
+            )
+            groups = pseudo_group(saliency, similarity, num_keep, self._group_size)
+            nncf_logger.info(f"Block {block.block_id}: merging to {num_keep}/{block.num_experts} experts.")
+            neuron_activations = block_stats.neuron_activation_signatures()
+            backend.merge_block(model, graph, block, groups, saliency, neuron_activations=neuron_activations)

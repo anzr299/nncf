@@ -291,6 +291,7 @@ class OVExpertReductionBackend(ExpertReductionBackend):
         dataset,
         subset_size: int,
         renormalize_router_weights: bool = False,
+        collect_similarity: bool = False,
     ) -> dict[str, MoEBlockStatistics]:
         """
         Runs the calibration dataset through the model with extra taps and accumulates the
@@ -329,11 +330,21 @@ class OVExpertReductionBackend(ExpertReductionBackend):
                 "topk": f"reap_tap::{block.block_id}::topk",
                 "expert": f"reap_tap::{block.block_id}::expert",
             }
-            for tap_name, source in (
+            taps = [
                 (names["probs"], probs_node.output(0)),
                 (names["topk"], topk_node.output(1)),  # TopK indices port
                 (names["expert"], expert_mm.output(0)),
-            ):
+            ]
+            if collect_similarity:
+                # Gate logits are the Softmax input (the gate MatMul output).
+                names["logits"] = f"reap_tap::{block.block_id}::logits"
+                taps.append((names["logits"], probs_node.input_value(0)))
+                # Per-neuron intermediate activations are the down-proj's activation input
+                # [num_experts, tokens, intermediate] for the C_act alignment signature.
+                names["neuron_act"] = f"reap_tap::{block.block_id}::neuron_act"
+                down_activation_port = 1 - expert_proj.weight_port_id
+                taps.append((names["neuron_act"], expert_mm.input_value(down_activation_port)))
+            for tap_name, source in taps:
                 result = opset.result(source)
                 result.set_friendly_name(tap_name)
                 result.get_output_tensor(0).set_names({tap_name})
@@ -342,7 +353,10 @@ class OVExpertReductionBackend(ExpertReductionBackend):
             tap_specs[block.block_id] = names
 
         engine = OVNativeEngine(tap_model)
-        stats = {block.block_id: MoEBlockStatistics(num_experts=block.num_experts) for block in blocks}
+        stats = {
+            block.block_id: MoEBlockStatistics(num_experts=block.num_experts, collect_similarity=collect_similarity)
+            for block in blocks
+        }
 
         for i, data in enumerate(dataset.get_inference_data()):
             if i >= subset_size:
@@ -350,27 +364,57 @@ class OVExpertReductionBackend(ExpertReductionBackend):
             outputs = engine.infer(data)
             for block in blocks:
                 names = tap_specs[block.block_id]
-                probs = np.asarray(outputs[names["probs"]])  # [tokens, num_experts]
+                probs = np.asarray(outputs[names["probs"]]).reshape(-1, block.num_experts)  # [tokens, num_experts]
                 topk = np.asarray(outputs[names["topk"]])  # [tokens, top_k]
+                topk = topk.reshape(-1, topk.shape[-1])
                 expert_out = np.asarray(outputs[names["expert"]])  # [num_experts, tokens, hidden]
                 # Per-expert, per-token L2 norm over the hidden dimension -> [tokens, num_experts]
                 norms = np.linalg.norm(expert_out, axis=-1).T
-                probs = probs.reshape(-1, block.num_experts)
-                topk = topk.reshape(-1, topk.shape[-1])
-                stats[block.block_id].update(probs, norms, topk, renormalize_router_weights)
+                gate_logits = np.asarray(outputs[names["logits"]]) if collect_similarity else None
+                expert_outputs = expert_out if collect_similarity else None
+                neuron_act = np.asarray(outputs[names["neuron_act"]]) if collect_similarity else None
+                stats[block.block_id].update(
+                    probs,
+                    norms,
+                    topk,
+                    renormalize_router_weights,
+                    gate_logits=gate_logits,
+                    expert_outputs=expert_outputs,
+                    neuron_activations=neuron_act,
+                )
 
         return stats
 
-    def reduce_block(
-        self, model: ov.Model, graph: NNCFGraph, block: MoEBlockInfo, surviving_experts: np.ndarray
+    def _shrink_block_to_experts(
+        self,
+        model: ov.Model,
+        graph: NNCFGraph,
+        block: MoEBlockInfo,
+        surviving_experts: np.ndarray,
+        merged_projections: dict[str, np.ndarray] = None,
     ) -> None:
+        """
+        Rewrites the block so only ``surviving_experts`` remain.
+
+        For each fused expert projection: if ``merged_projections`` provides a pre-merged
+        full-size tensor for it (REAM), that tensor is sliced to ``surviving_experts``;
+        otherwise the original weight is simply indexed (REAP). The gate rows and the
+        activation-path shape constants are reduced accordingly.
+
+        :param merged_projections: Optional mapping ``weight_name -> merged weight`` of full
+            shape ``[num_experts, out, in]`` whose ``surviving_experts`` rows hold the merged
+            experts; used by REAM. If None, plain pruning is performed.
+        """
         surviving_experts = np.asarray(surviving_experts)
         num_keep = int(surviving_experts.shape[0])
 
-        # Slice each fused expert projection along the expert axis (axis 0).
         for projection in block.expert_projections:
-            weight = self.get_fused_weight(model, graph, projection.node, projection.weight_port_id)
-            sliced = Tensor(np.take(weight.data, surviving_experts, axis=projection.expert_axis))
+            weight_name = self._const_attr(projection.node, projection.weight_port_id)["name"]
+            if merged_projections is not None and weight_name in merged_projections:
+                source = merged_projections[weight_name]
+            else:
+                source = self.get_fused_weight(model, graph, projection.node, projection.weight_port_id).data
+            sliced = Tensor(np.take(source, surviving_experts, axis=projection.expert_axis))
             self.set_fused_weight(model, graph, projection.node, projection.weight_port_id, sliced)
 
         # Slice the gate weight rows (expert dim at axis 0) so the router emits num_keep logits.
@@ -386,3 +430,78 @@ class OVExpertReductionBackend(ExpertReductionBackend):
         # produced [num_experts, ?, hidden]) are refreshed; otherwise compilation may use a
         # stale shape and fail the per-expert batched MatMul.
         model.validate_nodes_and_infer_types()
+
+    def reduce_block(
+        self, model: ov.Model, graph: NNCFGraph, block: MoEBlockInfo, surviving_experts: np.ndarray
+    ) -> None:
+        # REAP: prune to the surviving experts (no merging).
+        self._shrink_block_to_experts(model, graph, block, surviving_experts)
+
+    def _projection_role(self, block: MoEBlockInfo, projection: ExpertProjection) -> str:
+        """
+        Classifies a projection by which weight dimension is the intermediate (neuron) axis.
+
+        Expert weights are ``[num_experts, out, in]``. A projection whose output dim equals
+        the hidden size (the gate-weight input dim) is the down-projection: its *input* is
+        the intermediate axis ('intermediate_in'). All others (gate/up) produce the
+        intermediate axis as their *output* ('intermediate_out').
+        """
+        hidden_size = self._const_attr(block.gate_node, block.gate_weight_port_id)["shape"][1]
+        shape = self._const_attr(projection.node, projection.weight_port_id)["shape"]
+        return "intermediate_in" if shape[1] == hidden_size else "intermediate_out"
+
+    def merge_block(
+        self,
+        model: ov.Model,
+        graph: NNCFGraph,
+        block: MoEBlockInfo,
+        groups: list[list[int]],
+        saliency: np.ndarray,
+        neuron_activations: np.ndarray = None,
+    ) -> None:
+        """
+        REAM: merge each group of experts into its centroid, then shrink to the centroids.
+
+        A single intermediate-neuron permutation per expert is computed from the combined
+        weight cost and applied consistently across all projections (rows for
+        intermediate-output projections, columns for the intermediate-input down-proj), so
+        the merged FFN stays internally consistent. Merged weights are written at the
+        centroid index, then the block is shrunk to the (sorted) centroids.
+
+        :param groups: Grouping from pseudo-pruning; ``groups[g][0]`` is the centroid.
+        :param saliency: Per-expert saliency used as merge weights.
+        :param neuron_activations: Optional per-neuron activation signatures
+            ``[num_experts, intermediate, tokens]`` (down-proj input) enabling the C_act
+            term of the combined alignment cost. If None, weight-only alignment is used.
+        """
+        from nncf.quantization.algorithms.expert_reduction.ream import merge_group
+
+        # Assemble projection descriptors shared across all groups.
+        projection_descs = []
+        for projection in block.expert_projections:
+            weight_name = self._const_attr(projection.node, projection.weight_port_id)["name"]
+            weight = self.get_fused_weight(model, graph, projection.node, projection.weight_port_id).data
+            projection_descs.append(
+                {"name": weight_name, "weight": weight, "role": self._projection_role(block, projection)}
+            )
+
+        use_activations = neuron_activations is not None
+
+        # Start from a copy of every projection; overwrite each centroid with its merged FFN.
+        merged_projections = {desc["name"]: desc["weight"].copy() for desc in projection_descs}
+        for group in groups:
+            # Combined alignment cost C_act + C_wt (REAM Sec. 4), applied as one consistent
+            # intermediate-neuron permutation across all projections.
+            merged = merge_group(
+                projection_descs,
+                group,
+                saliency,
+                activation_signatures=neuron_activations,
+                use_weights=True,
+                use_activations=use_activations,
+            )
+            for name, merged_weight in merged.items():
+                merged_projections[name][group[0]] = merged_weight
+
+        centroids = sorted(group[0] for group in groups)
+        self._shrink_block_to_experts(model, graph, block, np.array(centroids), merged_projections)
