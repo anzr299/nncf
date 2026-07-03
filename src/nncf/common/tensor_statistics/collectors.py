@@ -930,11 +930,7 @@ class HAWQAggregator(AggregatorBase):
         trace = fns.sum(fns.multiply(x, x))
         # We normalize the trace by the number of elements in the tensor so that larger matrices do not dominate
         # the sensitivity scores
-        self._container = (self._container + trace) / x.size
-
-    def reset(self) -> None:
-        self._collected_samples = 0
-        self._container = Tensor(0.0)
+        self._container += trace / x.size
 
     def _aggregate_impl(self) -> Tensor:
         return self._container * 2 / self._collected_samples
