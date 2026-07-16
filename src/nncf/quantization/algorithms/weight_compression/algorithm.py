@@ -36,6 +36,7 @@ from nncf.experimental.quantization.algorithms.weight_compression.codebook_estim
 from nncf.parameters import BackupMode
 from nncf.parameters import CompressionFormat
 from nncf.parameters import CompressWeightsMode
+from nncf.parameters import MoEExpertStatisticMode
 from nncf.parameters import SensitivityMetric
 from nncf.quantization.advanced_parameters import AdvancedCompressionParameters
 from nncf.quantization.advanced_parameters import GroupSizeFallbackMode
@@ -394,6 +395,7 @@ class WeightCompression(Algorithm):
 
         self._group_size_fallback_mode = self._advanced_parameters.group_size_fallback_mode
         self._min_adjusted_group_size = self._advanced_parameters.min_adjusted_group_size
+        self._moe_expert_statistic_mode = self._advanced_parameters.moe_expert_statistic_mode
 
         if self._awq:
             awq_params = self._advanced_parameters.awq_params
@@ -1316,6 +1318,27 @@ class WeightCompression(Algorithm):
         statistics_aggregator.collect_statistics(model, graph)
         return statistics_aggregator.statistic_points
 
+    def _moe_expert_statistic_mode_gate_weighted(
+        self, node_with_weights: list[NNCFNode], graph: NNCFGraph
+    ) -> bool | None:
+        """
+        Decides whether per-expert MoE statistics should be collected for the matmuls fed by a shared
+        activation, and if so, whether to use gate-weighted masking.
+
+        :param node_with_weights: Matmul nodes consuming the shared activation.
+        :param graph: The NNCFGraph.
+        :return: None to use the default all-token mean; otherwise True/False for gate-weighted / binary
+            per-expert masked mean.
+        """
+        if self._moe_expert_statistic_mode == MoEExpertStatisticMode.OFF:
+            return None
+        # Only enable when every matmul fed by this activation is a fused MoE expert matmul, so the
+        # (num_experts, tokens, hidden) activation and the masked-mean reduction are well defined.
+        is_moe = getattr(self._backend_entity, "is_moe_expert_matmul", None)
+        if is_moe is None or not all(is_moe(node, graph) for node in node_with_weights):
+            return None
+        return self._moe_expert_statistic_mode == MoEExpertStatisticMode.GATE_WEIGHTED
+
     def get_statistic_points(
         self,
         model: TModel,
@@ -1365,9 +1388,17 @@ class WeightCompression(Algorithm):
                     assert len(reduction_axes) == 2
                     reduction_axes = reduction_axes[1:]
 
-                stat_collector = self._backend_entity.mean_statistic_collector(
-                    reduction_axes=reduction_axes, subset_size=self._subset_size
-                )
+                # For fused MoE expert matmuls, optionally collect a per-expert mean over only the tokens
+                # routed to each expert (instead of the all-token mean shared by every expert).
+                moe_gate_weighted = self._moe_expert_statistic_mode_gate_weighted(node_with_weights, graph)
+                if moe_gate_weighted is not None:
+                    stat_collector = self._backend_entity.moe_masked_mean_statistic_collector(
+                        gate_weighted=moe_gate_weighted, subset_size=self._subset_size
+                    )
+                else:
+                    stat_collector = self._backend_entity.mean_statistic_collector(
+                        reduction_axes=reduction_axes, subset_size=self._subset_size
+                    )
                 statistic_container.add_statistic_point(
                     StatisticPoint(
                         target_point=statistic_point, tensor_collector=stat_collector, algorithm=self._algorithm_key

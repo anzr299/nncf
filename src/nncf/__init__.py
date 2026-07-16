@@ -41,6 +41,7 @@ from nncf.parameters import BackupMode as BackupMode
 from nncf.parameters import CompressionFormat as CompressionFormat
 from nncf.parameters import CompressWeightsMode as CompressWeightsMode
 from nncf.parameters import DropType as DropType
+from nncf.parameters import MoEExpertStatisticMode as MoEExpertStatisticMode
 from nncf.parameters import ModelType as ModelType
 from nncf.parameters import PruneMode as PruneMode
 from nncf.parameters import QuantizationMode as QuantizationMode

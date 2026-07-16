@@ -182,6 +182,32 @@ class BackupMode(StrEnum):
     FP8_E4M3 = "fp8_e4m3"
 
 
+@api(canonical_alias="nncf.MoEExpertStatisticMode")
+class MoEExpertStatisticMode(StrEnum):
+    """
+    Controls how activation statistics are collected for packed Mixture-of-Experts (MoE) weights during
+    data-aware weight compression (AWQ, Scale Estimation).
+
+    In a fused MoE block every expert's matmul is fed the same batch of all tokens (the activation is the
+    hidden states tiled across experts), and routing is applied afterwards to the outputs. As a result the
+    default statistic for every expert is identical - the mean over all tokens - and carries no per-expert
+    information. These modes restrict each expert's statistic to the tokens actually routed to it, using the
+    router's dense routing-weights tensor. Experts that receive no routed tokens in the calibration data fall
+    back to the all-token statistic.
+
+    :param OFF: No MoE-specific handling. Each expert uses the statistic computed over all tokens
+        (NNCF's default behavior).
+    :param BINARY: Each token routed to an expert contributes equally; the expert's statistic is the mean over
+        exactly the tokens routed to it (routing weights are used only as a 0/1 membership mask).
+    :param GATE_WEIGHTED: Each routed token's contribution is weighted by its softmax routing probability, so
+        tokens more strongly routed to an expert influence its statistic more.
+    """
+
+    OFF = "off"
+    BINARY = "binary"
+    GATE_WEIGHTED = "gate_weighted"
+
+
 @api(canonical_alias="nncf.SensitivityMetric")
 class SensitivityMetric(StrEnum):
     """

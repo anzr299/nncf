@@ -23,6 +23,7 @@ from typing import Any
 from nncf.common.quantization.quantizer_propagation.structs import QuantizerPropagationRule
 from nncf.common.quantization.structs import QuantizationScheme as QuantizationMode
 from nncf.common.utils.api_marker import api
+from nncf.parameters import MoEExpertStatisticMode
 from nncf.parameters import StrEnum
 from nncf.quantization.range_estimator import RangeEstimatorParameters
 from nncf.tensor import TensorDataType
@@ -432,12 +433,19 @@ class AdvancedCompressionParameters:
     :type codebook: TTensor
     :param adaptive_codebook_params: Advanced parameters for adaptive codebook estimation.
     :type adaptive_codebook_params: AdvancedAdaptiveCodebookParameters
+    :param moe_expert_statistic_mode: Controls per-expert activation statistics collection for packed
+        Mixture-of-Experts weights during data-aware compression (AWQ, Scale Estimation). By default
+        (``MoEExpertStatisticMode.OFF``) every expert shares the all-token statistic. ``BINARY`` restricts each
+        expert's statistic to the tokens routed to it; ``GATE_WEIGHTED`` additionally weights each routed token
+        by its softmax routing probability. Only affects the OpenVINO backend and fused MoE models.
+    :type moe_expert_statistic_mode: MoEExpertStatisticMode
     """
 
     statistics_path: str | None = None
     lora_adapter_rank: int = 256
     group_size_fallback_mode: GroupSizeFallbackMode = GroupSizeFallbackMode.ERROR
     min_adjusted_group_size: int = 32
+    moe_expert_statistic_mode: MoEExpertStatisticMode = MoEExpertStatisticMode.OFF
     awq_params: AdvancedAWQParameters = field(default_factory=AdvancedAWQParameters)
     scale_estimation_params: AdvancedScaleEstimationParameters = field(
         default_factory=AdvancedScaleEstimationParameters

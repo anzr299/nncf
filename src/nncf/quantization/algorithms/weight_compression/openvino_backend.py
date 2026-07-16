@@ -49,6 +49,7 @@ from nncf.openvino.statistics.collectors import OVMaxVarianceReducer
 from nncf.openvino.statistics.collectors import OVMeanAbsMaxReducer
 from nncf.openvino.statistics.collectors import OVMeanReducer
 from nncf.openvino.statistics.collectors import OVMeanVarianceReducer
+from nncf.openvino.statistics.collectors import OVMoEMaskedMeanReducer
 from nncf.openvino.statistics.collectors import OVShapeReducer
 from nncf.parameters import CompressionFormat
 from nncf.parameters import CompressWeightsMode
@@ -118,6 +119,42 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         collector.register_statistic_branch(WCTensorStatistic.MEAN_STAT, mean_reducer, NoopAggregator(subset_size))
         collector.register_statistic_branch(WCTensorStatistic.SHAPE_STAT, shape_reducer, NoopAggregator(subset_size))
         return collector
+
+    def moe_masked_mean_statistic_collector(
+        self, gate_weighted: bool, subset_size: int | None = None
+    ) -> TensorCollector:
+        # Per-expert mean over routed tokens. The masked-mean reducer replaces the plain mean; the shape
+        # reducer is kept unchanged so downstream processing (process_stats) sees the same statistic layout.
+        mean_reducer = OVMoEMaskedMeanReducer(gate_weighted)
+        shape_reducer = OVShapeReducer(inplace=True)
+        collector = TensorCollector(WCTensorStatistic)
+        collector.register_statistic_branch(WCTensorStatistic.MEAN_STAT, mean_reducer, NoopAggregator(subset_size))
+        collector.register_statistic_branch(WCTensorStatistic.SHAPE_STAT, shape_reducer, NoopAggregator(subset_size))
+        return collector
+
+    @staticmethod
+    def is_moe_expert_matmul(node_with_weight: NNCFNode, graph: NNCFGraph) -> bool:
+        """
+        Returns True if the given matmul is a fused Mixture-of-Experts expert matmul: it has a 3D packed
+        expert weight (num_experts, ...) and its module scope contains the router's routing tensor
+        (a ``ScatterElementsUpdate`` node). Such matmuls are fed the same tokens for every expert, so their
+        per-expert statistics are collected with the masked-mean collector instead of the plain mean.
+
+        :param node_with_weight: The matmul node consuming a packed expert weight.
+        :param graph: The NNCFGraph.
+        :return: Whether the node is a fused MoE expert matmul.
+        """
+        la = node_with_weight.layer_attributes
+        if la is None or not la.constant_attributes:
+            return False
+        if not any(len(attrs["shape"]) == 3 for attrs in la.constant_attributes.values()):
+            return False
+        # The routing tensor shares the expert block's module scope (".../layers.N.mlp.experts/...").
+        scope = node_with_weight.node_name.split("/")[0]
+        return any(
+            n.metatype is om.OVScatterElementsUpdateMetatype and n.node_name.startswith(scope)
+            for n in graph.get_all_nodes()
+        )
 
     @staticmethod
     def get_activation_port_id(node: NNCFNode, nncf_graph: NNCFGraph) -> int:

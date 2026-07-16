@@ -10,6 +10,7 @@
 # limitations under the License.
 
 
+import nncf
 from nncf.common.tensor_statistics.collectors import AbsMaxReducer
 from nncf.common.tensor_statistics.collectors import AbsQuantileReducer
 from nncf.common.tensor_statistics.collectors import BatchMeanReducer
@@ -24,6 +25,7 @@ from nncf.common.tensor_statistics.collectors import MinReducer
 from nncf.common.tensor_statistics.collectors import QuantileReducer
 from nncf.common.tensor_statistics.collectors import RawReducer
 from nncf.common.tensor_statistics.collectors import ShapeReducer
+from nncf.common.tensor_statistics.collectors import TensorReducerBase
 from nncf.openvino.graph.node_utils import get_inplace_batch_mean_op
 from nncf.openvino.graph.node_utils import get_inplace_max_op
 from nncf.openvino.graph.node_utils import get_inplace_max_var_op
@@ -32,6 +34,7 @@ from nncf.openvino.graph.node_utils import get_inplace_mean_op
 from nncf.openvino.graph.node_utils import get_inplace_mean_per_ch
 from nncf.openvino.graph.node_utils import get_inplace_mean_var_op
 from nncf.openvino.graph.node_utils import get_inplace_min_op
+from nncf.openvino.graph.node_utils import get_inplace_moe_masked_mean_op
 from nncf.openvino.graph.node_utils import get_inplace_shape_op
 from nncf.quantization.range_estimator import StatisticsType
 
@@ -84,6 +87,38 @@ class OVBatchMeanReducer(BatchMeanReducer):
 class OVMeanPerChanelReducer(MeanPerChReducer):
     def get_inplace_fn(self):
         return get_inplace_mean_per_ch(self._channel_axis)
+
+
+class OVMoEMaskedMeanReducer(TensorReducerBase):
+    """
+    Per-expert mean of a fused MoE expert-matmul activation, restricted to the tokens routed to each expert.
+
+    The activation has shape (num_experts, tokens, hidden) where every expert sees the same tokens; the
+    router's dense routing weights (found in the graph) select which tokens count for each expert. The
+    reduction is performed in-graph (inplace); see :func:`get_inplace_moe_masked_mean_op` for the exact
+    computation and the empty-expert fallback.
+    """
+
+    def __init__(self, gate_weighted: bool):
+        """
+        :param gate_weighted: If True, weight each routed token by its softmax routing probability; otherwise
+            use a 0/1 membership mask so every routed token contributes equally.
+        """
+        super().__init__(inplace=True)
+        self._gate_weighted = gate_weighted
+
+    def _reduce_out_of_place(self, x: list) -> list:
+        msg = "OVMoEMaskedMeanReducer supports only in-graph (inplace) reduction."
+        raise nncf.InternalError(msg)
+
+    def get_inplace_fn(self) -> InplaceInsertionFNType | None:
+        return get_inplace_moe_masked_mean_op(self._gate_weighted)
+
+    def __eq__(self, other: object) -> bool:
+        return super().__eq__(other) and self._gate_weighted == other._gate_weighted
+
+    def __hash__(self) -> int:
+        return hash((self.__class__.__name__, self.inplace, self._axes, self._axes_mode, self._gate_weighted))
 
 
 class OVQuantileReducer(QuantileReducer):

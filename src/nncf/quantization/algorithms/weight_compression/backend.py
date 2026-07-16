@@ -13,6 +13,7 @@ from abc import ABC
 from abc import abstractmethod
 from typing import Callable, Iterable, TypeVar
 
+import nncf
 from nncf.common.graph import NNCFGraph
 from nncf.common.graph import NNCFNode
 from nncf.common.graph.operator_metatypes import OperatorMetatype
@@ -242,6 +243,21 @@ class WeightCompressionAlgoBackend(ABC):
         :param reduction_axes: Axes along which to apply mean reduction
         :param subset_size: Number of samples to collect
         """
+
+    def moe_masked_mean_statistic_collector(
+        self, gate_weighted: bool, subset_size: int | None = None
+    ) -> TensorCollector:
+        """
+        Return a per-expert masked-mean statistic collector for fused Mixture-of-Experts weights, where each
+        expert's mean is computed over only the tokens routed to it. Backends that do not support per-expert
+        MoE statistics do not override this method.
+
+        :param gate_weighted: If True, weight each routed token by its softmax routing probability; otherwise
+            use a 0/1 membership mask so every routed token contributes equally.
+        :param subset_size: Number of samples to collect.
+        """
+        msg = "Per-expert MoE statistics are not supported by this backend."
+        raise nncf.UnsupportedBackendError(msg)
 
     @staticmethod
     @abstractmethod

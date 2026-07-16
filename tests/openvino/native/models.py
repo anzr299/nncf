@@ -1451,6 +1451,57 @@ class YOLO26AttentionBlock(OVReferenceModel):
         return model
 
 
+class FusedMoEModel(OVReferenceModel):
+    """
+    Minimal fused Mixture-of-Experts block reproducing the OpenVINO export pattern of packed-expert models
+    (e.g. optimum-intel's batched expert path). A single gate MatMul->Softmax->TopK router builds a dense
+    routing-weights tensor via ScatterElementsUpdate; the hidden states are tiled across experts and fed to a
+    per-expert bmm against a packed 3D weight constant. The routing scatter shares the expert block's
+    ``.../experts/...`` module scope with the expert-matmul activation, which is what the per-expert MoE
+    statistics feature keys on.
+    """
+
+    def _create_ov_model(self, num_experts: int = 4, num_tokens: int = 6, hidden_dim: int = 8, top_k: int = 2):
+        input_node = opset.parameter([num_tokens, hidden_dim], name="Input")
+
+        # Router: MatMul -> Softmax -> TopK, producing per-token top-k expert weights and indices.
+        gate_w = self._rng.standard_normal((num_experts, hidden_dim)).astype(np.float32)
+        logits = opset.matmul(input_node, gate_w, transpose_a=False, transpose_b=True, name="experts.gate/MatMul")
+        probs = opset.softmax(logits, axis=-1, name="experts.gate/Softmax")
+        topk = opset.topk(
+            probs, k=top_k, axis=-1, mode="max", sort="value", name="experts.gate/TopK"
+        )
+        top_w = topk.output(0)  # (num_tokens, top_k)
+        top_i = opset.convert(topk.output(1), destination_type=np.int64, name="experts/Convert")
+
+        # Dense routing weights (num_tokens, num_experts): scatter top-k weights into a zeros tensor.
+        zeros = opset.constant(np.zeros((num_tokens, num_experts), dtype=np.float32), name="experts/zeros")
+        routing = opset.scatter_elements_update(
+            zeros, top_i, top_w, axis=opset.constant(1, dtype=np.int64), name="experts/ScatterElementsUpdate"
+        )
+
+        # Tile the hidden states across experts -> (num_experts, num_tokens, hidden_dim).
+        expanded = opset.tile(input_node, np.array([num_experts, 1], dtype=np.int64), name="experts/aten::repeat/Tile")
+        expanded = opset.reshape(
+            expanded, opset.constant(np.array([num_experts, num_tokens, hidden_dim]), dtype=np.int64),
+            special_zero=False, name="experts/aten::view/Reshape",
+        )
+
+        # Packed expert weight (num_experts, hidden_dim, out_dim); per-expert bmm.
+        out_dim = hidden_dim
+        w = self._rng.standard_normal((num_experts, hidden_dim, out_dim)).astype(np.float32)
+        w_node = opset.constant(w, dtype=np.float32, name="experts.gate_up_proj")
+        bmm = opset.matmul(expanded, w_node, transpose_a=False, transpose_b=False, name="experts/aten::bmm/MatMul")
+
+        # Two results keep both the expert output and the routing tensor live (the routing scatter must not be
+        # pruned, since the per-expert statistics feature locates it in the graph).
+        expert_result = opset.result(bmm, name="Result")
+        routing_result = opset.result(routing, name="RoutingResult")
+
+        model = ov.Model([expert_result, routing_result], [input_node], name="FusedMoEModel")
+        return model
+
+
 class ParallelEdgesOutputPortIdModel(OVReferenceModel):
     def _create_ov_model(self):
         input_node = opset.parameter([1, 2, 4, 4], name="Input")

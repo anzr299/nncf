@@ -491,6 +491,102 @@ def get_inplace_mean_per_ch(axis: int) -> InplaceInsertionFnType:
     return get_reduce_op
 
 
+def _find_moe_routing_output(activation_node: ov.Node) -> ov.Output:
+    """
+    Finds the router's dense routing-weights tensor for a fused Mixture-of-Experts (MoE) expert matmul,
+    given the node producing that matmul's (experts, tokens, hidden) activation.
+
+    In the OpenVINO export of a fused MoE block (e.g. optimum-intel's batched expert path) every expert's
+    matmul is fed the same tokens - the hidden states tiled across experts - and routing is applied to the
+    outputs. The routing information lives in a single ``ScatterElementsUpdate`` node that builds the dense
+    routing-weights tensor of shape (tokens, num_experts): entry (t, e) is the softmax routing weight if token
+    t is routed to expert e and 0 otherwise. That node shares the expert block's module scope with the
+    activation node (``.../layers.N.mlp.experts/...``) and there is exactly one such node per MoE block, which
+    is what this lookup relies on.
+
+    :param activation_node: The OpenVINO node producing the (experts, tokens, hidden) expert-matmul activation.
+    :return: The output of the routing ``ScatterElementsUpdate`` node (dense routing weights, (tokens, experts)).
+    """
+    # Module scope is the part of the friendly name before the first "/", e.g.
+    # "__module.model.layers.0.mlp.experts/aten::view/Reshape" -> "__module.model.layers.0.mlp.experts".
+    scope = activation_node.get_friendly_name().split("/")[0]
+
+    # Walk the graph outward from the activation node (both directions) and take the ScatterElementsUpdate
+    # that lives in the same expert-block scope. Bounded BFS keeps this cheap and local to the block.
+    visited: set[str] = set()
+    queue: list[ov.Node] = [activation_node]
+    while queue:
+        node = queue.pop()
+        name = node.get_friendly_name()
+        if name in visited:
+            continue
+        visited.add(name)
+        if node.get_type_name() == "ScatterElementsUpdate" and name.startswith(scope):
+            return node.output(0)
+        for inp in node.inputs():
+            queue.append(inp.get_source_output().get_node())
+        for out in node.outputs():
+            for target in out.get_target_inputs():
+                queue.append(target.get_node())
+
+    msg = (
+        f"Could not locate the MoE routing tensor (ScatterElementsUpdate) in scope '{scope}' for the expert "
+        f"activation node '{activation_node.get_friendly_name()}'. Per-expert MoE statistics are not supported "
+        f"for this model."
+    )
+    raise nncf.ValidationError(msg)
+
+
+def get_inplace_moe_masked_mean_op(gate_weighted: bool) -> InplaceInsertionFnType:
+    """
+    Returns an inplace-insertion function that computes a per-expert mean of a fused MoE expert-matmul
+    activation, restricted to the tokens routed to each expert.
+
+    The activation has shape (num_experts, tokens, hidden) where every expert sees the same tokens (see
+    :func:`_find_moe_routing_output`). Using the router's dense routing weights ``R`` of shape
+    (tokens, num_experts), token t contributes to expert e only when ``R[t, e] != 0``. The inserted subgraph
+    computes, per expert e and hidden channel h::
+
+        mean[e, h] = sum_t w[t, e] * x[e, t, h] / sum_t w[t, e]
+
+    where ``w = (R != 0)`` for a binary membership mask (``gate_weighted=False``) or ``w = R`` to weight each
+    routed token by its softmax routing probability (``gate_weighted=True``). Experts with no routed tokens in
+    the calibration data (``sum_t w[t, e] == 0``) fall back to the plain mean over all tokens, which matches
+    NNCF's default (non-MoE) statistic.
+
+    :param gate_weighted: If True, weight each routed token by its routing probability; otherwise use a 0/1
+        membership mask so every routed token contributes equally.
+    :return: Inplace insertion function to use in ModelTransformer.
+    """
+
+    def get_masked_mean_op(node: ov.Node, output_port_id: int, output_node_name: str) -> ov.Node:
+        activation = node.output(output_port_id)  # (num_experts, tokens, hidden)
+        routing = _find_moe_routing_output(node)  # (tokens, num_experts)
+
+        f32 = ov.Type.f32
+        activation = opset.convert(activation, f32)
+        # Transpose routing weights to (num_experts, tokens) to align with the activation's expert/token axes.
+        mask = opset.transpose(opset.convert(routing, f32), opset.constant(np.array([1, 0], dtype=np.int64)))
+        if not gate_weighted:
+            # 0/1 membership mask: every routed token contributes equally.
+            mask = opset.convert(opset.not_equal(mask, opset.constant(np.array(0.0, dtype=np.float32))), f32)
+
+        token_axis = opset.constant(np.array([1], dtype=np.int64))
+        # (num_experts, tokens, 1) so the weight broadcasts over hidden channels.
+        mask_bc = opset.unsqueeze(mask, opset.constant(np.array([2], dtype=np.int64)))
+        weighted_sum = opset.reduce_sum(opset.multiply(activation, mask_bc), token_axis, keep_dims=False)
+        counts = opset.reduce_sum(mask, token_axis, keep_dims=True)  # (num_experts, 1)
+
+        eps = opset.constant(np.array(1e-9, dtype=np.float32))
+        masked_mean = opset.divide(weighted_sum, opset.maximum(counts, eps))
+        # Experts with no routed tokens fall back to the all-token mean (NNCF's default statistic).
+        global_mean = opset.reduce_mean(activation, token_axis, keep_dims=False)
+        is_empty = opset.less_equal(counts, eps)
+        return opset.select(is_empty, global_mean, masked_mean, name=output_node_name)
+
+    return get_masked_mean_op
+
+
 def get_partial_shape_safe(node, port_id) -> tuple[int, ...]:
     partial_shape = node.get_output_partial_shape(port_id)
     if partial_shape.rank.is_dynamic or not partial_shape.all_non_negative:

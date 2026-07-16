@@ -26,6 +26,7 @@ from openvino import opset13 as opset
 import nncf
 import nncf.openvino.optimized_functions as opt_fns
 from nncf import CompressWeightsMode
+from nncf import MoEExpertStatisticMode
 from nncf import SensitivityMetric
 from nncf.common.factory import build_graph
 from nncf.common.tensor_statistics.collectors import AggregatorBase
@@ -45,6 +46,7 @@ from nncf.quantization.advanced_parameters import AdvancedCompressionParameters 
 from nncf.quantization.advanced_parameters import AdvancedGPTQParameters as GPTQParams
 from nncf.quantization.advanced_parameters import AdvancedLoraCorrectionParameters as LoraParams
 from nncf.quantization.advanced_parameters import GroupSizeFallbackMode
+from nncf.quantization.algorithms.weight_compression.algorithm import WeightCompression
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionParameters
 from nncf.quantization.algorithms.weight_compression.mixed_precision import MIXED_PRECISION_CRITERIA
@@ -81,6 +83,7 @@ from tests.openvino.native.models import OVReferenceModel
 from tests.openvino.native.models import Phi3dot5RoPEModel
 from tests.openvino.native.models import RoPEModelWC
 from tests.openvino.native.models import SAMPEModel
+from tests.openvino.native.models import FusedMoEModel
 from tests.openvino.native.models import SequentialMatmulModel
 from tests.openvino.native.models import SimpleMoEModel
 from tests.openvino.native.models import WeightsModel
@@ -2141,6 +2144,127 @@ def test_data_aware_algo_with_different_activation_dimensions(n_extra_dims):
         ratio=0.5,
         sensitivity_metric=SensitivityMetric.MEAN_ACTIVATION_MAGNITUDE,
     )
+
+
+def _reference_moe_expert_means(
+    model: ov.Model, calibration_inputs: list[np.ndarray], gate_weighted: bool
+) -> np.ndarray:
+    """
+    Computes the expected per-expert masked mean of a FusedMoEModel activation directly with numpy, mirroring
+    the router (softmax + top-k) and the masked reduction the feature performs in-graph. Returns an array of
+    shape (num_samples, num_experts, hidden_dim).
+    """
+    core = ov.Core()
+    # Expose the graph's actual dense routing-weights tensor (num_tokens, num_experts) so the reference uses
+    # exactly the routing the in-graph reducer sees.
+    scatter = [op for op in model.get_ops() if op.get_friendly_name() == "experts/ScatterElementsUpdate"][0]
+    probe = ov.Model([opset.result(scatter.output(0))], model.get_parameters())
+    compiled = core.compile_model(probe, "CPU")
+
+    per_sample = []
+    for sample in calibration_inputs:
+        hidden = sample  # (num_tokens, hidden_dim)
+        dense = compiled(sample)[compiled.output(0)]  # (num_tokens, num_experts)
+        num_tokens, hidden_dim = hidden.shape
+        mask = (dense.T != 0).astype(np.float32) if not gate_weighted else dense.T  # (num_experts, num_tokens)
+        num_experts = mask.shape[0]
+        weighted_sum = (mask[:, :, None] * hidden[None]).sum(axis=1)
+        counts = mask.sum(axis=1, keepdims=True)
+        global_mean = np.broadcast_to(hidden.mean(axis=0, keepdims=True), (num_experts, hidden_dim))
+        expert_mean = np.where(counts <= 1e-9, global_mean, weighted_sum / np.maximum(counts, 1e-9))
+        per_sample.append(expert_mean.astype(np.float32))
+    return np.stack(per_sample)
+
+
+@pytest.mark.parametrize("mode", [MoEExpertStatisticMode.BINARY, MoEExpertStatisticMode.GATE_WEIGHTED])
+def test_moe_per_expert_statistics(mode):
+    # A fused MoE block feeds every expert the same tokens; without per-expert masking the statistic is
+    # identical for every expert. With BINARY/GATE_WEIGHTED it must equal the mean over the routed tokens.
+    num_experts, num_tokens, hidden_dim = 4, 6, 8
+    model = FusedMoEModel(
+        num_experts=num_experts, num_tokens=num_tokens, hidden_dim=hidden_dim, top_k=2
+    ).ov_model
+    rng = np.random.default_rng(0)
+    calib = [rng.standard_normal((num_tokens, hidden_dim)).astype(np.float32) for _ in range(4)]
+
+    captured = {}
+    orig = WeightCompression._get_statistics_for_weights_compression
+
+    def capture(self, mmap, spc):
+        stats = orig(self, mmap, spc)
+        captured.update(stats)
+        return stats
+
+    with patch.object(WeightCompression, "_get_statistics_for_weights_compression", capture):
+        compress_weights(
+            model,
+            mode=CompressWeightsMode.INT4_ASYM,
+            group_size=hidden_dim,
+            ratio=1.0,
+            all_layers=True,
+            dataset=Dataset(calib),
+            scale_estimation=True,
+            subset_size=len(calib),
+            advanced_parameters=AdvancedCompressionParameters(moe_expert_statistic_mode=mode),
+        )
+
+    expert_stats = next(
+        np.stack([np.array(v.data) for v in stat.mean_values])
+        for name, stat in captured.items()
+        if name.endswith("experts/aten::bmm/MatMul")
+    )
+    assert expert_stats.shape == (len(calib), num_experts, hidden_dim)
+
+    # compress_weights mutates the model in place (including quantizing the router gate), so build the
+    # reference routing from a fresh, identically-seeded model.
+    reference_model = FusedMoEModel(
+        num_experts=num_experts, num_tokens=num_tokens, hidden_dim=hidden_dim, top_k=2
+    ).ov_model
+    reference = _reference_moe_expert_means(
+        reference_model, calib, gate_weighted=mode == MoEExpertStatisticMode.GATE_WEIGHTED
+    )
+    np.testing.assert_allclose(expert_stats, reference, atol=1e-5)
+    # The whole point: the per-expert statistics are no longer identical across experts.
+    assert expert_stats.std(axis=1).mean() > 1e-3
+
+
+def test_moe_per_expert_statistics_off_is_uniform():
+    # With the default OFF mode every expert sees all tokens, so the statistic is identical for every expert.
+    num_experts, num_tokens, hidden_dim = 4, 6, 8
+    model = FusedMoEModel(
+        num_experts=num_experts, num_tokens=num_tokens, hidden_dim=hidden_dim, top_k=2
+    ).ov_model
+    rng = np.random.default_rng(0)
+    calib = [rng.standard_normal((num_tokens, hidden_dim)).astype(np.float32) for _ in range(4)]
+
+    captured = {}
+    orig = WeightCompression._get_statistics_for_weights_compression
+
+    def capture(self, mmap, spc):
+        stats = orig(self, mmap, spc)
+        captured.update(stats)
+        return stats
+
+    with patch.object(WeightCompression, "_get_statistics_for_weights_compression", capture):
+        compress_weights(
+            model,
+            mode=CompressWeightsMode.INT4_ASYM,
+            group_size=hidden_dim,
+            ratio=1.0,
+            all_layers=True,
+            dataset=Dataset(calib),
+            scale_estimation=True,
+            subset_size=len(calib),
+            advanced_parameters=AdvancedCompressionParameters(moe_expert_statistic_mode=MoEExpertStatisticMode.OFF),
+        )
+
+    expert_stats = next(
+        np.stack([np.array(v.data) for v in stat.mean_values])
+        for name, stat in captured.items()
+        if name.endswith("experts/aten::bmm/MatMul")
+    )
+    # Every expert's statistic is the all-token mean, so they are all equal.
+    np.testing.assert_allclose(expert_stats.std(axis=1), 0.0, atol=1e-5)
 
 
 @pytest.mark.parametrize(
