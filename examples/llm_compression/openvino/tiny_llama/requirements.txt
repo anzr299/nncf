@@ -1,6 +1,7 @@
 datasets==5.0.0
 onnx==1.22.0
 openvino==2026.3.0rc2
+--extra-index-url https://storage.openvinotoolkit.org/simple/wheels/nightly --pre
 optimum-intel[openvino]==2.0.0
 optimum==2.2.0
 torch==2.10.0
