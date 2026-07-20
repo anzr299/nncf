@@ -82,7 +82,7 @@
         "accuracy_metrics": {
             "fp32_mAP": 0.44964819083938,
             "int8_mAP": 0.4507030984145927,
-            "accuracy_drop": -0.0010549075752127046
+            "accuracy_drop": -0.0009941002422954037
         },
         "performance_metrics": {
             "fp32_fps": 134.48,
@@ -200,15 +200,16 @@
         "requirements": "examples/llm_compression/openvino/tiny_llama/requirements.txt",
         "cpu": "Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz",
         "accuracy_metrics": {
-            "word_count": 86
+            "word_count": 74
         }
     },
     "llm_compression_fx": {
+        "xfail": "Differ output on windows: ticket-187175",
         "backend": "torchfx",
         "requirements": "examples/llm_compression/torch_fx/tiny_llama/requirements.txt",
         "cpu": "Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz",
         "accuracy_metrics": {
-            "word_count": 56
+            "word_count": 69
         }
     },
     "llm_compression_onnx": {
@@ -238,6 +239,7 @@
         }
     },
     "llm_compression_synthetic": {
+        "xfail": "Differ output on windows: ticket-187175",
         "backend": "openvino",
         "requirements": "examples/llm_compression/openvino/tiny_llama_synthetic_data/requirements.txt",
         "cpu": "Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz",
@@ -272,6 +274,19 @@
     "fp8_llm_quantization": {
         "backend": "openvino",
         "requirements": "examples/llm_compression/openvino/smollm2_360m_fp8/requirements.txt",
+        "cpu": "Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz",
+        "accuracy_metrics": {
+            "answers": [
+                "Paris.",
+                "Mont Blanc.",
+                "Toronto.",
+                "Tokyo."
+            ]
+        }
+    },
+    "fp8_llm_quantization_onnx": {
+        "backend": "onnx",
+        "requirements": "examples/llm_compression/onnx/smollm2_360m_fp8/requirements.txt",
         "cpu": "Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz",
         "accuracy_metrics": {
             "answers": [

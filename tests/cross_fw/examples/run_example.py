@@ -204,6 +204,14 @@ def fp8_llm_quantization() -> dict[str, float]:
     return {"answers": list(result.values())}
 
 
+def fp8_llm_quantization_onnx() -> dict[str, float]:
+    from examples.llm_compression.onnx.smollm2_360m_fp8.main import main as fp8_llm_quantization_main
+
+    result = fp8_llm_quantization_main()
+
+    return {"answers": list(result.values())}
+
+
 def codebook_llm_compression() -> list[str]:
     from examples.llm_compression.openvino.smollm2_360m_codebook.main import main as codebook_llm_compression_main
 
@@ -249,8 +257,10 @@ def llm_compression_qat_with_nls() -> float:
         "--pretrained=HuggingFaceTB/SmolLM2-135M-Instruct",
         "--fast_eval",
         "--task=arc_challenge",
-        "--epochs=2",
-        "--batch_size=16",
+        "--epochs=1",
+        "--batch_size=8",
+        "--microbatch_size=8",
+        "--eval_batch_size=16",
         "--num_min_loss_configs=5",
         "--lr=5e-4",
         "--lora_rank_space",
