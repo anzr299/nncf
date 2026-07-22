@@ -1,5 +1,37 @@
 # Release Notes
 
+## New in Release 3.3.0
+
+- Breaking changes:
+  - ...
+- General:
+  - ...
+- Features:
+  - Enabled data-aware compression methods (AWQ, GPTQ, Scale Estimation, and LoRA Correction) for all bit widths <= 4, including INT2 and INT3 (https://github.com/openvinotoolkit/nncf/pull/4131).
+  - (OpenVINO) Added the `GroupedMatMul` operation support for data-free weight compression (https://github.com/openvinotoolkit/nncf/pull/4130).
+  - (OpenVINO) Added INT2 and INT3 symmetric compression types (https://github.com/openvinotoolkit/nncf/pull/4123).
+  - (ONNX) Added FP8 support for the ONNX backend (https://github.com/openvinotoolkit/nncf/pull/4072).
+- Fixes:
+  - Fixed the aggregator formula for the HAWQ sensitivity metric used in mixed-precision weight compression (https://github.com/openvinotoolkit/nncf/pull/4106).
+  - Fixed the compression range for asymmetric compression when all weight values are positive or negative (https://github.com/openvinotoolkit/nncf/pull/4074).
+  - Fixed weight serialization to support `safetensors` >= 0.8.0 by converting NumPy scalars to arrays before saving (https://github.com/openvinotoolkit/nncf/pull/4094).
+- Improvements:
+  - Added a column showing the supported backend for each mode in the Supported Compression Modes documentation table (https://github.com/openvinotoolkit/nncf/pull/4120).
+  - (PyTorch) Removed an obsolete Torch Dynamo tracing polyfill workaround that is no longer required after the migration to the new tracing approach in the PyTorch backend (https://github.com/openvinotoolkit/nncf/pull/4098).
+- Tutorials:
+  - ...
+- Known issues:
+  - ...
+- Deprecations/Removals:
+  - Removed unused code, including the `Statistics`, `NNCFDataLoader`, `QuantizersCounter`, and `QuantizationStatistics` classes, and the PyTorch `patch_torch_operators`, `register_module`, and `PTInitializingDataLoader` (https://github.com/openvinotoolkit/nncf/pull/4093).
+  - (PyTorch) Removed the unused `CompressionParameter` class (https://github.com/openvinotoolkit/nncf/pull/4108).
+- Requirements:
+  - Updated `openvino` to 2026.3.0 (https://github.com/openvinotoolkit/nncf/pull/4105) (https://github.com/openvinotoolkit/nncf/pull/4129) (https://github.com/openvinotoolkit/nncf/pull/4148).
+  - Updated `transformers` to 5.0.0 (https://github.com/openvinotoolkit/nncf/pull/4060).
+  - Updated `onnx` to 1.22.0 (https://github.com/openvinotoolkit/nncf/pull/4101).
+  - Updated `optimum` to 2.2.0 and `optimum-intel` to 2.0.0 (https://github.com/openvinotoolkit/nncf/pull/4095).
+  - Updated `networkx` to <= 3.6.1 (https://github.com/openvinotoolkit/nncf/pull/4059).
+
 ## New in Release 3.2.0
 
 - Features:
