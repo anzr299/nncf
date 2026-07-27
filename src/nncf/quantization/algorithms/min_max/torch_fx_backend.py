@@ -32,9 +32,11 @@ from nncf.common.tensor_statistics.collectors import TensorReducerBase
 from nncf.experimental.torch.fx.commands import FXApplyTransformationCommand
 from nncf.experimental.torch.fx.model_utils import get_target_point
 from nncf.experimental.torch.fx.transformations import qdq_insertion_transformation_builder
+from nncf.experimental.torch.fx.transformations import remove_split_getitem_nodes
 from nncf.parameters import ModelType
 from nncf.parameters import TargetDevice
 from nncf.quantization.algorithms.min_max.backend import MinMaxAlgoBackend
+from nncf.quantization.passes import InferenceGraphTransformation
 from nncf.quantization.fake_quantize import FakeConvertParameters
 from nncf.quantization.fake_quantize import FakeQuantizeParameters
 from nncf.quantization.range_estimator import StatisticsType
@@ -56,6 +58,10 @@ class FXMinMaxAlgoBackend(MinMaxAlgoBackend):
     @property
     def preserved_metatypes(self) -> list[OperatorMetatype]:
         return []
+
+    @property
+    def inference_graph_transformations(self) -> list[InferenceGraphTransformation]:
+        return [remove_split_getitem_nodes]
 
     @property
     def mat_mul_metatypes(self) -> list[OperatorMetatype]:
