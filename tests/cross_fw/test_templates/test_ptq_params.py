@@ -515,7 +515,7 @@ class TemplateTestPTQParams:
             self.get_algo_backend().inference_graph_transformations,
         )
 
-        # Only backends that register a custom transformation (TorchFX has getitem removal from the split-getitem pattern)
+        # Only TorchFX that registers a custom getitem removal transformation will
         # remove the getitem nodes.
         expected_getitem = 0 if self.get_algo_backend().inference_graph_transformations else 2
         assert sum(node.node_type == "__getitem__" for node in inference_nncf_graph.get_all_nodes()) == expected_getitem
