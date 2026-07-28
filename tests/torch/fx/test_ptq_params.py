@@ -26,6 +26,7 @@ from nncf.torch.graph.graph import PTNNCFGraph
 from nncf.torch.graph.graph import PTTargetPoint
 from nncf.torch.graph.operator_metatypes import PTCatMetatype
 from nncf.torch.graph.operator_metatypes import PTConv2dMetatype
+from nncf.torch.graph.operator_metatypes import PTSplitMetatype
 from nncf.torch.graph.operator_metatypes import PTLinearMetatype
 from nncf.torch.graph.operator_metatypes import PTSoftmaxMetatype
 from tests.common.quantization.metatypes import CatTestMetatype
@@ -84,6 +85,10 @@ class TestPTQParams(TemplateTestPTQParams):
             SoftmaxTestMetatype: PTSoftmaxMetatype,
             CatTestMetatype: PTCatMetatype,
         }
+
+    @property
+    def split_metatype(self):
+        return PTSplitMetatype
 
     @property
     def nncf_graph_cls(self):

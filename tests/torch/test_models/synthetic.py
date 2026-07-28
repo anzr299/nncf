@@ -671,6 +671,29 @@ class SplitCatModel(nn.Module):
         return torch.cat(list(chunks), dim=1)
 
 
+class SplitBlockModel(nn.Module):
+    """
+    Like the YOLO C2f split block.
+    conv -> chunk -> conv_0 -> cat.
+        \                     /
+         \                   /
+            chunk -> conv_1 
+    """
+
+    INPUT_SHAPE = (1, 4, 8, 8)
+
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Conv2d(4, 4, 1, bias=False)
+        self.branch_a = nn.Conv2d(2, 2, 1, bias=False)
+        self.branch_b = nn.Conv2d(2, 2, 1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.stem(x)
+        a, b = y.chunk(2, dim=1)
+        return torch.cat([self.branch_a(a), self.branch_b(b)], dim=1)
+
+
 class ConvReluBranchModel(nn.Module):
     INPUT_SHAPE = (1, 3, 3, 3)
 
