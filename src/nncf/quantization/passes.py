@@ -26,7 +26,7 @@ def transform_to_inference_graph(
     shapeof_metatypes: list[type[OperatorMetatype]],
     noop_metatypes: list[type[OperatorMetatype]],
     preserved_metatypes: list[type[OperatorMetatype]],
-    custom_transformations: list[Callable[[NNCFGraph], None]] | None = [],
+    custom_transformations: list[Callable[[NNCFGraph], None]] | None = None,
 ) -> NNCFGraph:
     """
     This method contains inplace pipeline of the passes that uses to provide inference graph without constant flows.
@@ -50,7 +50,8 @@ def transform_to_inference_graph(
 
     remove_noop_operation_nodes(nncf_graph, noop_metatypes)
 
-    for custom_transformation in custom_transformations or []:
+    custom_transformations = custom_transformations or []
+    for custom_transformation in custom_transformations:
         custom_transformation(nncf_graph)
 
     return nncf_graph
