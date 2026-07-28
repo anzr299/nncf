@@ -677,7 +677,7 @@ class SplitBlockModel(nn.Module):
     conv -> chunk -> conv_0 -> cat.
         \                     /
          \                   /
-            chunk -> conv_1 
+            chunk -> conv_1
     """
 
     INPUT_SHAPE = (1, 4, 8, 8)

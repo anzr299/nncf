@@ -500,9 +500,7 @@ class TemplateTestPTQParams:
             algo._get_ignored_names(nncf_graph, inference_nncf_graph, ignored_patterns)
 
     def test_inference_graph_custom_transformations(self):
-        nncf_graph = ModelWithSplitGetitem(
-            self.metatypes_mapping, self.split_metatype, self.nncf_graph_cls
-        ).nncf_graph
+        nncf_graph = ModelWithSplitGetitem(self.metatypes_mapping, self.split_metatype, self.nncf_graph_cls).nncf_graph
 
         assert sum(node.node_type == "__getitem__" for node in nncf_graph.get_all_nodes()) == 2
 
