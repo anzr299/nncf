@@ -25,9 +25,9 @@ from nncf.torch.graph.graph import PTNNCFGraph
 from nncf.torch.graph.graph import PTTargetPoint
 from nncf.torch.graph.operator_metatypes import PTCatMetatype
 from nncf.torch.graph.operator_metatypes import PTConv2dMetatype
-from nncf.torch.graph.operator_metatypes import PTSplitMetatype
 from nncf.torch.graph.operator_metatypes import PTLinearMetatype
 from nncf.torch.graph.operator_metatypes import PTSoftmaxMetatype
+from nncf.torch.graph.operator_metatypes import PTSplitMetatype
 from tests.common.quantization.metatypes import CatTestMetatype
 from tests.common.quantization.metatypes import Conv2dTestMetatype
 from tests.common.quantization.metatypes import LinearTestMetatype

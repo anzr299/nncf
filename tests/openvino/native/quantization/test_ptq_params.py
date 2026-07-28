@@ -19,10 +19,10 @@ from nncf.common.graph.transformations.commands import TargetType
 from nncf.common.graph.transformations.commands import TransformationType
 from nncf.common.utils.backend import BackendType
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVConcatMetatype
-from nncf.openvino.graph.metatypes.openvino_metatypes import OVSplitMetatype
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVConvolutionMetatype
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVMatMulMetatype
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVSoftmaxMetatype
+from nncf.openvino.graph.metatypes.openvino_metatypes import OVSplitMetatype
 from nncf.openvino.graph.nncf_graph_builder import GraphConverter
 from nncf.openvino.graph.transformations.commands import OVQuantizerInsertionCommand
 from nncf.openvino.graph.transformations.commands import OVTargetPoint

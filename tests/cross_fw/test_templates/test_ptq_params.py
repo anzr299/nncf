@@ -149,7 +149,8 @@ class ModelWithSplitGetitem:
             NodeWithType("Input_1", InputNoopMetatype),
             NodeWithType("Conv_1", metatypes[Conv2dTestMetatype]),
             NodeWithType("split", split_metatype),
-            NodeWithType("gather_0", None, op_type="__getitem__"), # For TorchFX, the getitem node after split is what is removed the inference-graph transformation.
+            # For TorchFX, the getitem node after split is removed in the inference graph transformation.
+            NodeWithType("gather_0", None, op_type="__getitem__"),
             NodeWithType("gather_1", None, op_type="__getitem__"),
             NodeWithType("Conv_2", metatypes[Conv2dTestMetatype]),
             NodeWithType("Conv_3", metatypes[Conv2dTestMetatype]),
@@ -499,7 +500,6 @@ class TemplateTestPTQParams:
             algo._get_ignored_names(nncf_graph, inference_nncf_graph, ignored_patterns)
 
     def test_inference_graph_custom_transformations(self):
-        backend = self.get_algo_backend()
         nncf_graph = ModelWithSplitGetitem(
             self.metatypes_mapping, self.split_metatype, self.nncf_graph_cls
         ).nncf_graph
@@ -508,17 +508,17 @@ class TemplateTestPTQParams:
 
         inference_nncf_graph = transform_to_inference_graph(
             deepcopy(nncf_graph),
-            backend.get_start_nodes_for_activation_path_tracing(nncf_graph),
-            backend.shapeof_metatypes,
-            backend.noop_metatypes,
-            backend.preserved_metatypes,
-            backend.inference_graph_transformations,
+            self.get_algo_backend().get_start_nodes_for_activation_path_tracing(nncf_graph),
+            self.get_algo_backend().shapeof_metatypes,
+            self.get_algo_backend().noop_metatypes,
+            self.get_algo_backend().preserved_metatypes,
+            self.get_algo_backend().inference_graph_transformations,
         )
 
         # Only backends that register a custom transformation (TorchFX has getitem removal from the split-getitem pattern)
         # remove the getitem nodes.
-        expected_getitem = 0 if backend.inference_graph_transformations else 2
-        assert sum(node.node_type == "__getitem__" for node in nncf_graph.get_all_nodes()) == expected_getitem
+        expected_getitem = 0 if self.get_algo_backend().inference_graph_transformations else 2
+        assert sum(node.node_type == "__getitem__" for node in inference_nncf_graph.get_all_nodes()) == expected_getitem
 
     @pytest.mark.parametrize("mode", ["target_point", "unified_scales"])
     def test_empty_statistics(self, mode, mocker):
