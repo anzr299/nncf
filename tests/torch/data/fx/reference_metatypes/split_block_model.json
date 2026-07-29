@@ -1,6 +1,6 @@
 {
-    "stem_weight": "PTConstNoopMetatype",
-    "branch_weight": "PTConstNoopMetatype",
+    "conv1_weight": "PTConstNoopMetatype",
+    "conv2_weight": "PTConstNoopMetatype",
     "x": "PTInputNoopMetatype",
     "conv2d": "PTConv2dMetatype",
     "chunk": "PTSplitMetatype",
