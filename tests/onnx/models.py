@@ -467,6 +467,7 @@ class SplitBlockModel(ONNXReferenceModel):
                \           /
                 --------->
     """
+
     def __init__(self):
         input_shape = [1, 4, 8, 8]
         model_input_name = "X"
