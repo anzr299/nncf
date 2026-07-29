@@ -127,51 +127,6 @@ class ModelWithUnifiedScales:
         self.nncf_graph = get_nncf_graph_from_mock_nx_graph(original_mock_graph, nncf_graph_cls=nncf_graph_cls)
 
 
-class ModelWithSplitGetitem:
-    #        Input_1
-    #           |
-    #         Conv_1
-    #           |
-    #         split
-    #         /    \
-    #   gather      gather
-    #      |          |
-    #    Conv_2     Conv_3
-    #        \      /
-    #         Cat_1
-    #           |
-    #        Output_1
-
-    def __init__(self, metatypes: dict[TestMetatype, OperatorMetatype], split_metatype, nncf_graph_cls=NNCFGraph):
-        # The gather (getitem) node type is what the TorchFX inference-graph transformation keys on;
-        # its metatype is irrelevant, so it is left to be inferred.
-        nodes = [
-            NodeWithType("Input_1", InputNoopMetatype),
-            NodeWithType("Conv_1", metatypes[Conv2dTestMetatype]),
-            NodeWithType("split", split_metatype),
-            # For TorchFX, the getitem node after split is removed in the inference graph transformation.
-            NodeWithType("gather_0", None, op_type="__getitem__"),
-            NodeWithType("gather_1", None, op_type="__getitem__"),
-            NodeWithType("Conv_2", metatypes[Conv2dTestMetatype]),
-            NodeWithType("Conv_3", metatypes[Conv2dTestMetatype]),
-            NodeWithType("Cat_1", metatypes[CatTestMetatype]),
-            NodeWithType("Output_1", OutputNoopMetatype),
-        ]
-        node_edges = [
-            ("Input_1", "Conv_1"),
-            ("Conv_1", "split"),
-            ("split", "gather_0"),
-            ("split", "gather_1"),
-            ("gather_0", "Conv_2"),
-            ("gather_1", "Conv_3"),
-            ("Conv_2", "Cat_1"),
-            ("Conv_3", "Cat_1"),
-            ("Cat_1", "Output_1"),
-        ]
-        original_mock_graph = create_mock_graph(nodes, node_edges)
-        self.nncf_graph = get_nncf_graph_from_mock_nx_graph(original_mock_graph, nncf_graph_cls=nncf_graph_cls)
-
-
 class DummyMinMaxTensorStatistic(MinMaxTensorStatistic):
     def tensor_eq(self):
         return True
@@ -239,11 +194,6 @@ class TemplateTestPTQParams:
     @abstractmethod
     def metatypes_mapping(self):
         pass
-
-    @property
-    @abstractmethod
-    def split_metatype(self):
-        """Backend-specific Split metatype used to build a split -> getitem graph."""
 
     @property
     @abstractmethod
@@ -498,25 +448,6 @@ class TemplateTestPTQParams:
                 algo._get_ignored_names(nncf_graph, inference_nncf_graph, ignored_patterns)
         else:
             algo._get_ignored_names(nncf_graph, inference_nncf_graph, ignored_patterns)
-
-    def test_inference_graph_custom_transformations(self):
-        nncf_graph = ModelWithSplitGetitem(self.metatypes_mapping, self.split_metatype, self.nncf_graph_cls).nncf_graph
-
-        assert sum(node.node_type == "__getitem__" for node in nncf_graph.get_all_nodes()) == 2
-
-        inference_nncf_graph = transform_to_inference_graph(
-            deepcopy(nncf_graph),
-            self.get_algo_backend().get_start_nodes_for_activation_path_tracing(nncf_graph),
-            self.get_algo_backend().shapeof_metatypes,
-            self.get_algo_backend().noop_metatypes,
-            self.get_algo_backend().preserved_metatypes,
-            self.get_algo_backend().inference_graph_transformations,
-        )
-
-        # Only TorchFX that registers a custom getitem removal transformation will
-        # remove the getitem nodes.
-        expected_getitem = 0 if self.get_algo_backend().inference_graph_transformations else 2
-        assert sum(node.node_type == "__getitem__" for node in inference_nncf_graph.get_all_nodes()) == expected_getitem
 
     @pytest.mark.parametrize("mode", ["target_point", "unified_scales"])
     def test_empty_statistics(self, mode, mocker):

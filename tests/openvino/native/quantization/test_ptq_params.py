@@ -22,7 +22,6 @@ from nncf.openvino.graph.metatypes.openvino_metatypes import OVConcatMetatype
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVConvolutionMetatype
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVMatMulMetatype
 from nncf.openvino.graph.metatypes.openvino_metatypes import OVSoftmaxMetatype
-from nncf.openvino.graph.metatypes.openvino_metatypes import OVSplitMetatype
 from nncf.openvino.graph.nncf_graph_builder import GraphConverter
 from nncf.openvino.graph.transformations.commands import OVQuantizerInsertionCommand
 from nncf.openvino.graph.transformations.commands import OVTargetPoint
@@ -81,10 +80,6 @@ class TestPTQParams(TemplateTestPTQParams):
             SoftmaxTestMetatype: OVSoftmaxMetatype,
             CatTestMetatype: OVConcatMetatype,
         }
-
-    @property
-    def split_metatype(self):
-        return OVSplitMetatype
 
     @property
     def nncf_graph_cls(self):

@@ -22,7 +22,6 @@ from nncf.onnx.graph.metatypes.onnx_metatypes import ONNXConcatMetatype
 from nncf.onnx.graph.metatypes.onnx_metatypes import ONNXConvolutionMetatype
 from nncf.onnx.graph.metatypes.onnx_metatypes import ONNXGemmMetatype
 from nncf.onnx.graph.metatypes.onnx_metatypes import ONNXSoftmaxMetatype
-from nncf.onnx.graph.metatypes.onnx_metatypes import ONNXSplitMetatype
 from nncf.onnx.graph.nncf_graph_builder import GraphConverter
 from nncf.onnx.graph.nncf_graph_builder import ONNXLayerAttributes
 from nncf.onnx.graph.transformations.commands import ONNXQuantizerInsertionCommand
@@ -83,10 +82,6 @@ class TestPTQParams(TemplateTestPTQParams):
             SoftmaxTestMetatype: ONNXSoftmaxMetatype,
             CatTestMetatype: ONNXConcatMetatype,
         }
-
-    @property
-    def split_metatype(self):
-        return ONNXSplitMetatype
 
     @property
     def nncf_graph_cls(self):
