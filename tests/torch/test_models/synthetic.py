@@ -675,9 +675,7 @@ class SplitBlockModel(nn.Module):
     """
     Like the YOLO C2f split block, with a weighted op on a single branch only.
     conv -> chunk -> conv -> cat
-        \                     /
-         \                   /
-           ->   chunk     ->
+               \_____________/
     """
 
     INPUT_SHAPE = (1, 4, 8, 8)
