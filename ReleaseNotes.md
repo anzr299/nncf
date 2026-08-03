@@ -3,7 +3,7 @@
 ## New in Release 3.3.0
 
 - Features:
-  - Enabled data-aware compression methods (AWQ, GPTQ, Scale Estimation, and LoRA Correction) for all bit widths <= 4, including INT2 and INT3 (https://github.com/openvinotoolkit/nncf/pull/4131).
+  - Enabled data-aware compression methods (AWQ, GPTQ, Scale Estimation, and LoRA Correction) for all bit widths < 4, including INT2 and INT3 (https://github.com/openvinotoolkit/nncf/pull/4131).
   - (OpenVINO) Added INT2 and INT3 symmetric compression types (https://github.com/openvinotoolkit/nncf/pull/4123).
   - (OpenVINO) Added the `GroupedMatMul` operation support for data-free weight compression (https://github.com/openvinotoolkit/nncf/pull/4130).
   - (ONNX) Added FP8 support for the ONNX backend (https://github.com/openvinotoolkit/nncf/pull/4072).
