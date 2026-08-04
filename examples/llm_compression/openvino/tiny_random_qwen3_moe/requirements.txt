@@ -1,5 +1,3 @@
 git+https://github.com/mitruska/optimum-intel.git@force_grouped_mm
---extra-index-url https://storage.openvinotoolkit.org/simple/wheels/nightly --pre
---pre
 openvino
 openvino-tokenizers
