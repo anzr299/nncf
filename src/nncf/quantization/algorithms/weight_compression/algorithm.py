@@ -38,6 +38,7 @@ from nncf.parameters import CompressionFormat
 from nncf.parameters import CompressWeightsMode
 from nncf.parameters import SensitivityMetric
 from nncf.quantization.advanced_parameters import AdvancedCompressionParameters
+from nncf.quantization.advanced_parameters import CustomAnnotation
 from nncf.quantization.advanced_parameters import GroupSizeFallbackMode
 from nncf.quantization.advanced_parameters import convert_to_dict_recursively
 from nncf.quantization.algorithms.algorithm import Algorithm
@@ -50,6 +51,7 @@ from nncf.quantization.algorithms.weight_compression.mixed_precision import MIXE
 from nncf.quantization.algorithms.weight_compression.scale_estimation import ScaleEstimation
 from nncf.quantization.algorithms.weight_compression.weight_lowering import WeightCompressionConfig
 from nncf.quantization.algorithms.weight_compression.weight_lowering import get_reduction_channel_size
+from nncf.scopes import CustomAnnotationScope
 from nncf.scopes import IgnoredScope
 from nncf.scopes import get_ignored_node_names_from_ignored_scope
 from nncf.tensor import Tensor
@@ -85,6 +87,7 @@ def get_weight_compression_configuration(
     sensitivity_metric: SensitivityMetric | None = None,
     backup_mode: BackupMode | None = None,
     advanced_parameters: AdvancedCompressionParameters | None = None,
+    custom_annotation: list[CustomAnnotation] | None = None,
 ) -> dict[str, Any]:
     """
     Generates a configuration dictionary for weight compression based on the provided parameters.
@@ -134,7 +137,54 @@ def get_weight_compression_configuration(
         ),
         "backup_mode": backup_mode,
         "advanced_parameters": advanced_parameters or AdvancedCompressionParameters(),
+        "custom_annotation": custom_annotation,
     }
+
+
+def check_custom_annotation(custom_annotation: list[CustomAnnotation] | None) -> None:
+    """
+    Validates the user-defined custom annotation.
+
+    :param custom_annotation: List of custom annotations to validate.
+    """
+    if custom_annotation is None:
+        return
+
+    if not isinstance(custom_annotation, (list, tuple)):
+        msg = (
+            "The custom_annotation option expects a list of nncf.CustomAnnotation instances, "
+            f"but {type(custom_annotation).__name__} is given."
+        )
+        raise nncf.ValidationError(msg)
+
+    for annotation in custom_annotation:
+        if not isinstance(annotation, CustomAnnotation):
+            msg = (
+                "The custom_annotation option expects a list of nncf.CustomAnnotation instances, "
+                f"but an element of type {type(annotation).__name__} is given."
+            )
+            raise nncf.ValidationError(msg)
+
+        if not isinstance(annotation.config, WeightCompressionConfig):
+            msg = (
+                "The config of a custom annotation must be an nncf.WeightCompressionConfig instance, "
+                f"but {type(annotation.config).__name__} is given."
+            )
+            raise nncf.ValidationError(msg)
+
+        if not isinstance(annotation.scope, CustomAnnotationScope):
+            msg = (
+                "The scope of a custom annotation must be an nncf.CustomAnnotationScope instance, "
+                f"but {type(annotation.scope).__name__} is given."
+            )
+            raise nncf.ValidationError(msg)
+
+        if annotation.config.is_codebook and annotation.config.codebook_values is None:
+            msg = (
+                f"Codebook values must be provided in the custom annotation config for the "
+                f"{annotation.config.mode.value} compression mode."
+            )
+            raise nncf.ValidationError(msg)
 
 
 def check_user_compression_configuration(
@@ -153,10 +203,12 @@ def check_user_compression_configuration(
     backup_mode: BackupMode | None,
     compression_format: CompressionFormat | None,
     advanced_parameters: AdvancedCompressionParameters | None,
+    custom_annotation: list[CustomAnnotation] | None = None,
 ) -> None:
     """
     Validates the user's weight compression configuration for correctness.
     """
+    check_custom_annotation(custom_annotation)
     if mode in INT8_MODES:
         if (ratio and ratio != 1) or (group_size and group_size != -1):
             msg = (
@@ -319,6 +371,7 @@ class WeightCompression(Algorithm):
         backup_mode: BackupMode,
         compression_format: CompressionFormat = CompressionFormat.DQ,
         advanced_parameters: AdvancedCompressionParameters | None = None,
+        custom_annotation: list[CustomAnnotation] | None = None,
     ):
         """
         :param mode: Defines a mode for weight compression.
@@ -365,6 +418,9 @@ class WeightCompression(Algorithm):
             FP8_E4M3 stands for FP8 format with E4M3 values sharing group-level fp16 scale.
         :param compression_format: Describes the format in which the model is saved after weight compression.
         :param advanced_parameters: advanced parameters for algorithms in compression pipeline.
+        :param custom_annotation: A list of user-defined weight compression configurations bound to portions of
+            the model. The configuration of a custom annotation takes precedence over the one assigned by the
+            algorithm for all the matched nodes.
         """
         super().__init__()
         self._mode = mode
@@ -387,6 +443,7 @@ class WeightCompression(Algorithm):
         self._advanced_parameters = (
             advanced_parameters if advanced_parameters is not None else AdvancedCompressionParameters()
         )
+        self._custom_annotation = custom_annotation
 
         criterion_cls = MIXED_PRECISION_CRITERIA.get(self._sensitivity_metric)
         self._mixed_precision_algo = criterion_cls(self._ratio, self._subset_size)
@@ -1089,6 +1146,163 @@ class WeightCompression(Algorithm):
 
         return all_weight_params, ratio_defining_params, skipped_weight_params
 
+    def _get_custom_annotation_configs(self, graph: NNCFGraph) -> dict[str, WeightCompressionConfig]:
+        """
+        Maps node names matched by the custom annotation to the user-defined weight compression configuration.
+
+        If several annotations match the same node, the last one takes precedence.
+
+        :param graph: NNCFGraph instance.
+        :return: A mapping from a node name to the user-defined weight compression configuration.
+        """
+        node_name_to_config: dict[str, WeightCompressionConfig] = {}
+        for annotation in self._custom_annotation:
+            annotated_names = get_ignored_node_names_from_ignored_scope(
+                annotation.scope, graph, strict=annotation.scope.validate, scope_kind="Annotated"
+            )
+            overlapped_names = sorted(annotated_names & node_name_to_config.keys())
+            if overlapped_names:
+                nncf_logger.warning(
+                    "Several custom annotations match the same nodes. The last matched annotation takes "
+                    "precedence for the following nodes:\n\t" + "\n\t".join(overlapped_names)
+                )
+            for node_name in annotated_names:
+                node_name_to_config[node_name] = annotation.config
+        return node_name_to_config
+
+    def _validate_custom_annotation_group_size(self, weight_params: list[WeightCompressionParameters]) -> None:
+        """
+        Validates that the group size defined by the custom annotation is divisible by the reduction channel size
+        for all the annotated weights. Group size fallback modes are not applied to the annotated weights since
+        the group size is defined by the user explicitly.
+
+        :param weight_params: List of annotated weight parameters.
+        """
+        failed_nodes = []
+        for w_params in weight_params:
+            group_size = w_params.compression_config.group_size
+            if group_size == -1:
+                continue
+            reduction_channel_size, _ = get_reduction_channel_size(w_params.weight_shape, w_params.reduction_axes)
+            if reduction_channel_size % group_size != 0:
+                failed_nodes.append((w_params.node_with_weight.node_name, reduction_channel_size, group_size))
+        if failed_nodes:
+            names = "\n\t".join(
+                f'"{name}" (channel size: {channel_size}, group size: {group_size})'
+                for name, channel_size, group_size in failed_nodes
+            )
+            msg = (
+                "Failed to apply group-wise quantization with the group size value defined by the custom "
+                "annotation. Ensure that the group size is divisible by the channel size. Failed nodes:\n\t" + names
+            )
+            raise nncf.InvalidGroupSizeError(msg)
+
+    def apply_custom_annotation(
+        self,
+        graph: NNCFGraph,
+        all_weight_params: list[WeightCompressionParameters],
+        ratio_defining_params: list[WeightCompressionParameters],
+        skipped_weight_params: list[WeightCompressionParameters],
+    ) -> tuple[
+        list[WeightCompressionParameters],
+        list[WeightCompressionParameters],
+        list[WeightCompressionParameters],
+    ]:
+        """
+        Assigns the user-defined weight compression configurations to the weight parameters matched by the
+        custom annotation.
+
+        The annotated parameters are excluded from the ratio-defining ones, so that neither the mixed precision
+        algorithm nor the `all_layers` and the last layer rules can override the user-defined configuration.
+        The parameters that were skipped, e.g. by the ignored scope, are returned back to the compressed ones
+        if they are matched by the custom annotation.
+
+        :param graph: NNCFGraph instance.
+        :param all_weight_params: List of all weight compression parameters that can be compressed.
+        :param ratio_defining_params: List of ratio-defining parameters.
+        :param skipped_weight_params: List of weight compression parameters that are not compressed.
+        :return: The updated tuple of all, ratio-defining and skipped weight compression parameters.
+        """
+        if not self._custom_annotation:
+            return all_weight_params, ratio_defining_params, skipped_weight_params
+
+        node_name_to_config = self._get_custom_annotation_configs(graph)
+        compressed_weight_names = set(w_params.weight_name for w_params in all_weight_params)
+        annotated_weight_params = []
+        restored_weight_params = []
+        unsupported_node_names = []
+
+        def annotate(w_params: WeightCompressionParameters) -> bool:
+            config = node_name_to_config.get(w_params.node_with_weight.node_name)
+            if config is None:
+                return False
+            if not self.is_weight_compression_supported(w_params.weight_dtype, config.mode):
+                unsupported_node_names.append(w_params.node_with_weight.node_name)
+                return False
+            # A deep copy is required since some algorithms, e.g. codebook estimation, update the compression
+            # config of a weight parameter in place.
+            w_params.compression_config = copy.deepcopy(config)
+            annotated_weight_params.append(w_params)
+            return True
+
+        for w_params in all_weight_params:
+            annotate(w_params)
+
+        for w_params in skipped_weight_params:
+            # A weight that is already compressed under another node, e.g. a shared weight, must not be restored
+            # to avoid processing the same weight more than once.
+            if w_params.weight_name in compressed_weight_names:
+                continue
+            if annotate(w_params):
+                compressed_weight_names.add(w_params.weight_name)
+                restored_weight_params.append(w_params)
+
+        if unsupported_node_names:
+            nncf_logger.warning(
+                "The compression mode defined by the custom annotation is not supported for the data type of the "
+                "following nodes. They are kept with the configuration assigned by the algorithm:\n\t"
+                + "\n\t".join(sorted(unsupported_node_names))
+            )
+
+        matched_node_names = set(
+            w_params.node_with_weight.node_name
+            for w_params in all_weight_params + skipped_weight_params
+            if w_params.node_with_weight.node_name in node_name_to_config
+        )
+        not_applied_node_names = node_name_to_config.keys() - matched_node_names
+        if not_applied_node_names:
+            nncf_logger.warning(
+                "The following nodes are matched by the custom annotation, but have no weight to compress. "
+                "The annotation has no effect for them:\n\t" + "\n\t".join(sorted(not_applied_node_names))
+            )
+
+        self._validate_custom_annotation_group_size(annotated_weight_params)
+
+        if restored_weight_params:
+            nncf_logger.warning(
+                "The following nodes are excluded from the compression, e.g. by the ignored scope, but are matched "
+                "by the custom annotation. They will be compressed with the user-defined configuration:\n\t"
+                + "\n\t".join(sorted(w_params.node_with_weight.node_name for w_params in restored_weight_params))
+            )
+            restored_weight_names = set(w_params.weight_name for w_params in restored_weight_params)
+            skipped_weight_params = [
+                w_params for w_params in skipped_weight_params if w_params.weight_name not in restored_weight_names
+            ]
+            # Keep the topological order of the weight parameters
+            node_name_to_position = {node.node_name: i for i, node in enumerate(graph.topological_sort())}
+            all_weight_params = sorted(
+                all_weight_params + restored_weight_params,
+                key=lambda wp: node_name_to_position[wp.node_with_weight.node_name],
+            )
+
+        # The user-defined configuration takes precedence over the mixed precision assignment
+        annotated_weight_names = set(w_params.weight_name for w_params in annotated_weight_params)
+        ratio_defining_params = [
+            w_params for w_params in ratio_defining_params if w_params.weight_name not in annotated_weight_names
+        ]
+
+        return all_weight_params, ratio_defining_params, skipped_weight_params
+
     def apply(
         self,
         model: TModel,
@@ -1101,6 +1315,10 @@ class WeightCompression(Algorithm):
         # Get processed weight compression parameters ready for compression
         all_weight_params, ratio_defining_params, skipped_weight_params = self.get_weight_compression_parameters(
             model, graph
+        )
+        # Assign the user-defined weight compression configurations
+        all_weight_params, ratio_defining_params, skipped_weight_params = self.apply_custom_annotation(
+            graph, all_weight_params, ratio_defining_params, skipped_weight_params
         )
         # Collect statistics for the weights compression
         statistics, statistic_points = self.collect_statistics_and_statistic_points(
@@ -1228,6 +1446,7 @@ class WeightCompression(Algorithm):
                 "backup_mode": self._backup_mode.value,
                 "compression_format": self._compression_format.value,
                 "advanced_parameters": convert_to_dict_recursively(self._advanced_parameters),
+                "custom_annotation": self._custom_annotation or [],
             },
             algo_name="weight_compression",
         )

@@ -926,6 +926,208 @@ class TemplateWeightCompression(ABC):
             f"Expected {ref_num_group_sizes} group size values, but got {num_group_sizes}."
         )
 
+    # Test Custom Annotation
+
+    def _get_sequential_matmul_model(self):
+        """Returns a backend model with a sequence of MatMul layers, ready to be compressed."""
+        return self.wrap_model(
+            self.get_sequential_matmul_model(transpose_a=False), np.ones([1, 4, 4], dtype=np.float32)
+        )
+
+    def _compress_and_get_configs(self, mocker, **kwargs) -> dict[str, WeightCompressionConfig]:
+        """
+        Compresses a model and returns the compression config assigned to each compressed weight node.
+
+        :param mocker: Mocker fixture.
+        :param kwargs: Arguments for the `compress_weights` function.
+        :return: A mapping from a node name to the assigned compression config.
+        """
+        spy = mocker.spy(WeightCompression, "apply_with_parameters")
+        compress_weights(**kwargs)
+        all_weight_params = spy.call_args.args[5]
+        return {wp.node_with_weight.node_name: wp.compression_config for wp in all_weight_params}
+
+    def test_custom_annotation(self, mocker):
+        """
+        Checks that the config given by the custom annotation is assigned to the matched nodes, overriding both
+        the primary precision and the backup precision of the last layer, and that the rest of the nodes is not
+        affected.
+        """
+        common_kwargs = dict(mode=CompressWeightsMode.INT4_SYM, ratio=1.0, group_size=-1, all_layers=False)
+        reference_configs = self._compress_and_get_configs(
+            mocker, model=self._get_sequential_matmul_model(), **common_kwargs
+        )
+        node_names = list(reference_configs)
+        # The last layer is compressed to the backup precision since all_layers is False
+        assert reference_configs[node_names[-1]].mode == CompressWeightsMode.INT8_ASYM
+
+        annotated_config = WeightCompressionConfig(mode=CompressWeightsMode.INT8_SYM, group_size=-1)
+        last_layer_config = WeightCompressionConfig(mode=CompressWeightsMode.INT4_ASYM, group_size=4)
+        configs = self._compress_and_get_configs(
+            mocker,
+            model=self._get_sequential_matmul_model(),
+            **common_kwargs,
+            custom_annotation=[
+                nncf.CustomAnnotation(
+                    scope=nncf.CustomAnnotationScope(names=[node_names[1]]),
+                    config=annotated_config,
+                ),
+                nncf.CustomAnnotation(
+                    scope=nncf.CustomAnnotationScope(names=[node_names[-1]]),
+                    config=last_layer_config,
+                ),
+            ],
+        )
+
+        assert configs[node_names[1]] == annotated_config
+        assert configs[node_names[-1]] == last_layer_config
+        for node_name in node_names[2:-1]:
+            assert configs[node_name] == reference_configs[node_name]
+
+    def test_custom_annotation_over_mixed_precision(self, mocker):
+        """
+        Checks that an annotated node is excluded from the ratio-defining parameters, so that the mixed precision
+        algorithm can not override the config given by the custom annotation.
+        """
+        annotated_config = WeightCompressionConfig(mode=CompressWeightsMode.INT4_ASYM, group_size=-1)
+        common_kwargs = dict(mode=CompressWeightsMode.INT4_SYM, ratio=0.5, group_size=-1, all_layers=True)
+        node_names = list(
+            self._compress_and_get_configs(mocker, model=self._get_sequential_matmul_model(), **common_kwargs)
+        )
+
+        mixed_precision_spy = mocker.spy(WeightCompression, "apply_mixed_precision")
+        configs = self._compress_and_get_configs(
+            mocker,
+            model=self._get_sequential_matmul_model(),
+            **common_kwargs,
+            custom_annotation=[
+                nncf.CustomAnnotation(
+                    scope=nncf.CustomAnnotationScope(names=[node_names[1]]),
+                    config=annotated_config,
+                )
+            ],
+        )
+
+        ratio_defining_params = mixed_precision_spy.call_args.args[1]
+        ratio_defining_names = [wp.node_with_weight.node_name for wp in ratio_defining_params]
+        assert node_names[1] not in ratio_defining_names
+        assert configs[node_names[1]] == annotated_config
+
+    def test_custom_annotation_over_ignored_scope(self, mocker):
+        """
+        Checks that a node from the ignored scope is compressed with the config given by the custom annotation
+        and that a warning is logged.
+        """
+        annotated_config = WeightCompressionConfig(mode=CompressWeightsMode.INT8_SYM, group_size=-1)
+        common_kwargs = dict(mode=CompressWeightsMode.INT4_SYM, ratio=1.0, group_size=-1, all_layers=True)
+        node_names = list(
+            self._compress_and_get_configs(mocker, model=self._get_sequential_matmul_model(), **common_kwargs)
+        )
+        ignored_node_name = node_names[1]
+
+        with patch.object(nncf_logger, "warning") as mock_warning:
+            configs = self._compress_and_get_configs(
+                mocker,
+                model=self._get_sequential_matmul_model(),
+                **common_kwargs,
+                ignored_scope=IgnoredScope(names=[ignored_node_name]),
+                custom_annotation=[
+                    nncf.CustomAnnotation(
+                        scope=nncf.CustomAnnotationScope(names=[ignored_node_name]),
+                        config=annotated_config,
+                    )
+                ],
+            )
+
+        assert configs[ignored_node_name] == annotated_config
+        assert list(configs) == node_names, "The topological order of the weight parameters is not kept."
+        warning_messages = [args[0] for args, _ in mock_warning.call_args_list]
+        warn_msg = "are excluded from the compression, e.g. by the ignored scope, but are matched"
+        assert any(warn_msg in msg for msg in warning_messages)
+
+    def test_custom_annotation_overlap(self, mocker):
+        """
+        Checks that the last matched annotation takes precedence and that a warning is logged.
+        """
+        common_kwargs = dict(mode=CompressWeightsMode.INT4_SYM, ratio=1.0, group_size=-1, all_layers=True)
+        node_names = list(
+            self._compress_and_get_configs(mocker, model=self._get_sequential_matmul_model(), **common_kwargs)
+        )
+        first_config = WeightCompressionConfig(mode=CompressWeightsMode.INT8_SYM, group_size=-1)
+        last_config = WeightCompressionConfig(mode=CompressWeightsMode.INT4_ASYM, group_size=4)
+
+        with patch.object(nncf_logger, "warning") as mock_warning:
+            configs = self._compress_and_get_configs(
+                mocker,
+                model=self._get_sequential_matmul_model(),
+                **common_kwargs,
+                custom_annotation=[
+                    nncf.CustomAnnotation(
+                        scope=nncf.CustomAnnotationScope(names=[node_names[1], node_names[2]]),
+                        config=first_config,
+                    ),
+                    nncf.CustomAnnotation(
+                        scope=nncf.CustomAnnotationScope(names=[node_names[2]]),
+                        config=last_config,
+                    ),
+                ],
+            )
+
+        assert configs[node_names[1]] == first_config
+        assert configs[node_names[2]] == last_config
+        warning_messages = [args[0] for args, _ in mock_warning.call_args_list]
+        warn_msg = "Several custom annotations match the same nodes"
+        assert any(warn_msg in msg for msg in warning_messages)
+
+    def test_custom_annotation_without_weights(self, mocker):
+        """
+        Checks that a warning is logged when the custom annotation matches only the nodes that have no weight.
+        """
+        model = self._get_sequential_matmul_model()
+        input_node_name = nncf.build_graph(model).get_input_nodes()[0].node_name
+
+        with patch.object(nncf_logger, "warning") as mock_warning:
+            self._compress_and_get_configs(
+                mocker,
+                model=self._get_sequential_matmul_model(),
+                mode=CompressWeightsMode.INT4_SYM,
+                ratio=1.0,
+                group_size=-1,
+                custom_annotation=[
+                    nncf.CustomAnnotation(
+                        scope=nncf.CustomAnnotationScope(names=[input_node_name]),
+                        config=WeightCompressionConfig(mode=CompressWeightsMode.INT8_SYM, group_size=-1),
+                    )
+                ],
+            )
+
+        warning_messages = [args[0] for args, _ in mock_warning.call_args_list]
+        warn_msg = "are matched by the custom annotation, but have no weight to compress"
+        assert any(warn_msg in msg for msg in warning_messages)
+
+    def test_custom_annotation_with_invalid_group_size(self, mocker):
+        """
+        Checks that an error is raised when the group size given by the custom annotation is not divisible by the
+        channel size.
+        """
+        common_kwargs = dict(mode=CompressWeightsMode.INT4_SYM, ratio=1.0, group_size=-1, all_layers=True)
+        node_names = list(
+            self._compress_and_get_configs(mocker, model=self._get_sequential_matmul_model(), **common_kwargs)
+        )
+
+        with pytest.raises(InvalidGroupSizeError) as exc_info:
+            compress_weights(
+                model=self._get_sequential_matmul_model(),
+                **common_kwargs,
+                custom_annotation=[
+                    nncf.CustomAnnotation(
+                        scope=nncf.CustomAnnotationScope(names=[node_names[1]]),
+                        config=WeightCompressionConfig(mode=CompressWeightsMode.INT4_SYM, group_size=3),
+                    )
+                ],
+            )
+        assert "group size value defined by the custom annotation" in str(exc_info.value)
+
     @pytest.mark.parametrize("is_3d_weights", [True, False])
     @pytest.mark.parametrize("dataset", [None, np.ones([2, 8, 8], dtype=np.float32)])
     @pytest.mark.parametrize("prefer_data_aware_scaling", [True, False])
