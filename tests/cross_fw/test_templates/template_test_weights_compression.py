@@ -1126,7 +1126,44 @@ class TemplateWeightCompression(ABC):
                     )
                 ],
             )
-        assert "group size value defined by the custom annotation" in str(exc_info.value)
+        assert "Failed to apply group-wise quantization with group size value" in str(exc_info.value)
+        assert f'"{node_names[1]}" (channel size: 4, group size: 3)' in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "fallback_mode, ref_mode, ref_group_size",
+        [
+            (nncf.GroupSizeFallbackMode.ADJUST, CompressWeightsMode.INT4_ASYM, 4),
+            (nncf.GroupSizeFallbackMode.IGNORE, None, None),
+        ],
+    )
+    def test_custom_annotation_group_size_fallback(self, mocker, fallback_mode, ref_group_size, ref_mode):
+        """
+        Checks that the group size fallback mode is applied to the group size defined by the custom annotation:
+        ADJUST replaces it with a valid value, IGNORE keeps the node in the original precision.
+        """
+        common_kwargs = dict(mode=CompressWeightsMode.INT4_SYM, ratio=1.0, group_size=-1, all_layers=True)
+        node_names = list(
+            self._compress_and_get_configs(mocker, model=self._get_sequential_matmul_model(), **common_kwargs)
+        )
+
+        configs = self._compress_and_get_configs(
+            mocker,
+            model=self._get_sequential_matmul_model(),
+            **common_kwargs,
+            advanced_parameters=CompressionParams(group_size_fallback_mode=fallback_mode, min_adjusted_group_size=4),
+            custom_annotation=[
+                nncf.CustomAnnotation(
+                    scope=nncf.CustomAnnotationScope(names=[node_names[1]]),
+                    # The channel size of the model is 4, so the group size of 3 is invalid
+                    config=WeightCompressionConfig(mode=CompressWeightsMode.INT4_ASYM, group_size=3),
+                )
+            ],
+        )
+
+        if ref_mode is None:
+            assert node_names[1] not in configs
+        else:
+            assert configs[node_names[1]] == WeightCompressionConfig(mode=ref_mode, group_size=ref_group_size)
 
     @pytest.mark.parametrize("is_3d_weights", [True, False])
     @pytest.mark.parametrize("dataset", [None, np.ones([2, 8, 8], dtype=np.float32)])
