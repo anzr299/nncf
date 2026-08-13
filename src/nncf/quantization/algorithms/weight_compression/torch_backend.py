@@ -79,7 +79,7 @@ from nncf.torch.quantization.layers import SQMultiply
 
 
 class GroupedMatMulMeanReducer(TensorReducerBase):
-    """Reduce grouped-matmul activations to per-expert mean absolute values."""
+    """Reduce grouped-matmul activations to per-expert mean values."""
 
     def _reduce_out_of_place(self, inputs: list[Tensor]) -> list[Tensor]:
         activations = inputs[0].data
@@ -87,7 +87,7 @@ class GroupedMatMulMeanReducer(TensorReducerBase):
         counts = torch.diff(cumulative_offsets, prepend=cumulative_offsets.new_zeros(1))
         expert_ids = torch.arange(counts.numel(), device=counts.device).repeat_interleave(counts)
         values = activations.new_zeros((counts.numel(), activations.shape[-1]))
-        values = values.index_add(0, expert_ids, activations.abs())
+        values = values.index_add(0, expert_ids, activations)
         values /= counts.clamp_min(1).unsqueeze(1)
         shape = torch.tensor(values.shape, dtype=torch.int32, device=values.device)
         return [Tensor(values), Tensor(shape)]
