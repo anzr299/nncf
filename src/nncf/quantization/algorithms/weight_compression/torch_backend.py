@@ -265,7 +265,7 @@ class PTWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         """
         Initializes LoRA adapters using Singular Value Decomposition (SVD).
 
-        :param svd_residual: The residual tensor to be decomposed. Can be 2D [O, I] or 3D [E, O, I] for MoE.
+        :param svd_residual: The residual tensor to be decomposed.
         :param rank: The rank for the decomposition. If None, the full rank is used.
         :return: A tuple containing the U and V matrices from the SVD.
         """
@@ -312,8 +312,6 @@ class PTWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         compression_config = wc_params.compression_config
         # default mapping for 4bit weight compression and FQ_LORA format, no need to add lora adapters for 8bit weight
         mode_vs_schema_map = {
-            CompressWeightsMode.INT2_SYM: QuantizationScheme.SYMMETRIC_LORA,
-            CompressWeightsMode.INT3_SYM: QuantizationScheme.SYMMETRIC_LORA,
             CompressWeightsMode.INT4_ASYM: QuantizationScheme.ASYMMETRIC_LORA,
             CompressWeightsMode.INT4_SYM: QuantizationScheme.SYMMETRIC_LORA,
             CompressWeightsMode.INT8_ASYM: QuantizationScheme.ASYMMETRIC,
