@@ -170,12 +170,18 @@ class OVLayerwiseIterator(LayerwiseIterator):
         :param step: The current layer-wise step.
         :return: Dictionary of output node IDs to their corresponding tensors.
         """
+        # An output which is already cached is not recomputed. Besides saving inference, this is required when
+        # an output is at the same time an input of the subgraph, which happens for operations that consume a
+        # tensor produced outside of the subgraph, such as the group offsets of a GroupedMatMul. Such a tensor
+        # cannot be produced by the extracted subgraph, since its own inputs are cut off from it.
         outputs = {}
+        missing_output_ids = []
         for output_id in step.subgraph_outputs:
-            if output_id not in self._cache:
-                break
-            outputs[output_id] = self._cache[output_id]
-        else:
+            if output_id in self._cache:
+                outputs[output_id] = self._cache[output_id]
+            else:
+                missing_output_ids.append(output_id)
+        if not missing_output_ids:
             return outputs
 
         subgraph_model_input_ids = []
@@ -190,7 +196,7 @@ class OVLayerwiseIterator(LayerwiseIterator):
 
         if subgraph_model_input_ids:
             subgraph_inputs = self._model_input_ids
-            subgraph_outputs = [output_id for output_id in step.subgraph_outputs]
+            subgraph_outputs = list(missing_output_ids)
             for step in self._schedule[self._step_index + 1 :]:
                 for input_id in step.subgraph_inputs:
                     if (
@@ -202,10 +208,11 @@ class OVLayerwiseIterator(LayerwiseIterator):
             feed_dicts = islice(self._dataset.get_inference_data(), self._subset_size)
         else:
             subgraph_inputs = step.subgraph_inputs
-            subgraph_outputs = step.subgraph_outputs
+            subgraph_outputs = missing_output_ids
             feed_dicts = self.create_feed_dicts(step.subgraph_inputs)
         extracted_model = self.extract_model(subgraph_inputs, subgraph_outputs)
-        return self.run_model(extracted_model, feed_dicts, subgraph_outputs)
+        outputs.update(self.run_model(extracted_model, feed_dicts, subgraph_outputs))
+        return outputs
 
     def __next__(self) -> tuple[NNCFNode, dict[int, list[Tensor]]]:
         """

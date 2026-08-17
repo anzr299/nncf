@@ -411,7 +411,8 @@ def test_calculate_scale_linear(is_3d_weights: bool):
     node_with_weight = graph.get_all_nodes()[1]
 
     wrapped_inputs = [Tensor(inp) for inp in inputs]
-    H = gptq._calculate_hessian(node_with_weight, wrapped_inputs, is_3d_weight=is_3d_weights)
+    # In this test 3D weights always come with a matching per-expert activation.
+    H = gptq._calculate_hessian(node_with_weight, wrapped_inputs, has_per_expert_activation=is_3d_weights)
 
     reference_gptq_list = ref_gptqs if is_3d_weights else [ref_gptq]
     nncf_hessian_list = H.data if is_3d_weights else np.expand_dims(H.data, axis=0)

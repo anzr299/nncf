@@ -73,6 +73,7 @@ from tests.openvino.native.models import AWQModel_fp16_overlow
 from tests.openvino.native.models import DifferentChannelSizeMatmulModel
 from tests.openvino.native.models import GatherAndMatmulShareData
 from tests.openvino.native.models import GatherWithTwoReductionAxes
+from tests.openvino.native.models import GroupedMatMulModel
 from tests.openvino.native.models import IdentityMatmul
 from tests.openvino.native.models import IntegerModel
 from tests.openvino.native.models import MatMul
@@ -2135,6 +2136,132 @@ def test_awq_fp16_overflow_fix(mocker):
         assert np.all(scale.data <= clamped_scale.data)
         assert np.all(scale.data <= res.data)
         assert np.any(scale.data < res.data)
+
+
+def test_grouped_matmul_scale_estimation(mocker):
+    """
+    Checks that data-aware compression supports the GroupedMatMul operation: activation statistics are
+    collected for the activation which is shared between the experts, and the scale estimated from them
+    is applied to the per-expert weights.
+    """
+    from nncf.quantization.algorithms.weight_compression.algorithm import ScaleEstimation
+
+    num_experts, hidden_dim, out_dim, num_tokens, group_size = 3, 8, 16, 6, 4
+    model = GroupedMatMulModel(
+        num_experts=num_experts, hidden_dim=hidden_dim, out_dim=out_dim, num_tokens=num_tokens
+    ).ov_model
+    rng = np.random.default_rng(seed=0)
+    dataset = Dataset([rng.random((num_tokens, hidden_dim)).astype(np.float32) for _ in range(4)])
+
+    calc_q_params_spy = mocker.spy(ScaleEstimation, "calculate_quantization_params")
+
+    compressed_model = compress_weights(
+        model,
+        mode=CompressWeightsMode.INT4_ASYM,
+        ratio=1.0,
+        group_size=group_size,
+        all_layers=True,
+        scale_estimation=True,
+        dataset=dataset,
+    )
+
+    # The scale is estimated only for the nodes for which activation statistics were collected.
+    assert calc_q_params_spy.call_count == 1
+    estimated_scale = calc_q_params_spy.spy_return[0]
+    # A scale per expert, per output channel and per group of input channels.
+    assert estimated_scale.shape == (num_experts, out_dim, hidden_dim // group_size, 1)
+
+    nodes = {op.get_friendly_name(): op for op in compressed_model.get_ops()}
+    stats = check_int4_grouped(
+        nodes["grouped_matmul_data_0"], mode=CompressWeightsMode.INT4_ASYM, group_size=group_size
+    )
+    # The estimated scale, and not the one derived from the weights alone, ends up in the model.
+    assert np.allclose(stats["scale"], estimated_scale.data.astype(np.float16))
+
+
+def test_grouped_matmul_awq(mocker):
+    """
+    Checks that AWQ supports the GroupedMatMul operation. Since all the experts are applied to the same
+    activation, they have to share a single scale, which is inserted on that activation.
+    """
+    from nncf.quantization.algorithms.weight_compression.awq import AWQ
+
+    num_experts, hidden_dim, out_dim, num_tokens, group_size = 3, 8, 16, 6, 4
+    model = GroupedMatMulModel(
+        num_experts=num_experts, hidden_dim=hidden_dim, out_dim=out_dim, num_tokens=num_tokens, num_stages=2
+    ).ov_model
+    rng = np.random.default_rng(seed=0)
+    dataset = Dataset([rng.random((num_tokens, hidden_dim)).astype(np.float32) for _ in range(4)])
+
+    awq_step_spy = mocker.spy(AWQ, "_data_aware_step")
+
+    compressed_model = compress_weights(
+        model,
+        mode=CompressWeightsMode.INT4_ASYM,
+        ratio=1.0,
+        group_size=group_size,
+        all_layers=True,
+        awq=True,
+        dataset=dataset,
+    )
+
+    # Only the second stage is preceded by an activation function, so only it matches an AWQ pattern.
+    assert awq_step_spy.call_count == 1
+    # A single scale per input channel is shared by all the experts, instead of one scale per expert.
+    assert awq_step_spy.spy_return.shape == (out_dim,)
+
+    # The reciprocal scale is inserted on the activation shared by the experts.
+    awq_multiplies = [
+        op
+        for op in compressed_model.get_ops()
+        if op.get_type_name() == "Multiply" and "awq_mul" in op.get_friendly_name()
+    ]
+    assert len(awq_multiplies) == 1
+    assert list(awq_multiplies[0].input_value(1).get_shape()) == [1, out_dim]
+
+
+def test_grouped_matmul_gptq(mocker):
+    """
+    Checks that GPTQ supports the GroupedMatMul operation: a single Hessian is calculated from the shared
+    activation and the weights of every expert are quantized against it. Chained stages additionally cover
+    the reuse of the group offsets, which are produced outside of the subgraph extracted for a stage.
+    """
+    from nncf.quantization.algorithms.weight_compression.gptq import GPTQ
+
+    num_experts, hidden_dim, out_dim, num_tokens, group_size, num_stages = 3, 8, 16, 6, 4, 3
+    model = GroupedMatMulModel(
+        num_experts=num_experts,
+        hidden_dim=hidden_dim,
+        out_dim=out_dim,
+        num_tokens=num_tokens,
+        num_stages=num_stages,
+    ).ov_model
+    rng = np.random.default_rng(seed=0)
+    dataset = Dataset([rng.random((num_tokens, hidden_dim)).astype(np.float32) for _ in range(4)])
+
+    quantize_weights_spy = mocker.spy(GPTQ, "_quantize_weights")
+
+    compressed_model = compress_weights(
+        model,
+        mode=CompressWeightsMode.INT4_ASYM,
+        ratio=1.0,
+        group_size=group_size,
+        all_layers=True,
+        gptq=True,
+        dataset=dataset,
+    )
+
+    # Every expert of every stage is quantized separately, against the Hessian of the shared activation.
+    assert quantize_weights_spy.call_count == num_stages * num_experts
+    for call in quantize_weights_spy.call_args_list:
+        hessian, weight = call.args[2], call.args[3]
+        assert hessian.shape == (weight.shape[1], weight.shape[1])
+
+    nodes = {op.get_friendly_name(): op for op in compressed_model.get_ops()}
+    for stage in range(num_stages):
+        check_int4_grouped(
+            nodes[f"grouped_matmul_data_{stage}"], mode=CompressWeightsMode.INT4_ASYM, group_size=group_size
+        )
 
 
 @pytest.mark.parametrize("n_extra_dims", [0, 1, 2])

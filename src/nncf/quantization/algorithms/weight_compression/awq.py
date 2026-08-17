@@ -169,8 +169,15 @@ class AWQ(Algorithm):
                 graph, wp.node_with_weight
             )
 
+            # A 3D weight holds one matrix per expert. When the activation carries no matching per-expert axis,
+            # as for the OpenVINO GroupedMatMul, all the experts consume the very same activation and therefore
+            # have to share a single scale.
+            has_shared_activation = len(weight.shape) == 3 and len(act_shape) < 3
+
             is_mergeable = False
-            if self._backend_entity.is_node_with_weights(merge_node, graph):
+            # A shared scale cannot be merged into the previous weight: it would have to be applied to the
+            # output channels of every expert matrix, which the merging below does not express.
+            if not has_shared_activation and self._backend_entity.is_node_with_weights(merge_node, graph):
                 mergeable_node_weight_data = self._backend_entity.get_weight_names_and_port_ids(merge_node, graph)
                 merge_node_weight_ndims = [
                     len(self._backend_entity.get_weight_shape(merge_node, port_id, graph))
@@ -187,6 +194,9 @@ class AWQ(Algorithm):
             #          3D -> 3 - reduction_axes (reduction_axes=1) = 2
             #          4D -> 5 - reduction_axes (reduction_axes=1) = 4
             weight_scale_reduction_axes = (weight_ndim * 2) - 3 - wp.reduction_axes[0]
+            if has_shared_activation:
+                # The scale is shared between the experts, so it is reduced over the expert axis as well.
+                weight_scale_reduction_axes = tuple(i for i in range(weight_ndim) if i != wp.reduction_axes[0])
             if is_data_free:
                 scale = self._data_free_step(weight, axis=weight_scale_reduction_axes)
             else:
@@ -200,7 +210,13 @@ class AWQ(Algorithm):
                     prev_statistics = statistics[merge_node.node_name]
                 scale = self._data_aware_step(wp, weight, statistics[k], act_ch_axis, prev_weight, prev_statistics)
 
-            w_scale = fns.unsqueeze(scale, weight_scale_reduction_axes)
+            if has_shared_activation:
+                # The scale has a single element per input channel and is broadcast to every expert matrix.
+                w_scale_shape = [1] * weight_ndim
+                w_scale_shape[wp.reduction_axes[0]] = scale.shape[-1]
+                w_scale = fns.reshape(scale, tuple(w_scale_shape))
+            else:
+                w_scale = fns.unsqueeze(scale, weight_scale_reduction_axes)
             a_scale = 1.0 / scale
 
             scaled_weight = (weight * w_scale).astype(weight_dtype)
@@ -247,10 +263,20 @@ class AWQ(Algorithm):
         s = s.astype(TensorDataType.float32)
         X = X.astype(TensorDataType.float32)
 
-        is_2d_weight = weight.ndim == 2
-
         assert isinstance(wp.reduction_axes, tuple) and len(wp.reduction_axes) == 1
         reduction_axis = wp.reduction_axes[0]
+
+        if weight.ndim == 3 and X.ndim == 2:
+            # A 3D weight applied to a single shared activation, as for the OpenVINO GroupedMatMul. All the
+            # experts must share one scale, so the expert axis is folded into the output channels: the search
+            # below then minimizes the quantization error over all the experts at once.
+            if reduction_axis == 1:
+                # [num_experts, hidden_dimension, out_features] -> [num_experts, out_features, hidden_dimension]
+                weight = fns.moveaxis(weight, -1, -2)
+            weight = weight.reshape((-1, weight.shape[-1]))
+            reduction_axis = 1
+
+        is_2d_weight = weight.ndim == 2
 
         if is_2d_weight:
             s = fns.unsqueeze(s, 0)
