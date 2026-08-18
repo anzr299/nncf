@@ -139,27 +139,22 @@ class GPTQ:
             weight_tensor = fns.astype(weight_tensor, TensorDataType.float32)
 
             is_3d_weight = len(weight_tensor.shape) == 3
-            # A 3D weight holds one matrix per expert. The activation carries a matching per-expert axis only
-            # when its rank matches the weight rank. Operations such as the OpenVINO GroupedMatMul instead
-            # apply all the experts to a single shared activation, so one Hessian is computed from it and
-            # reused for every expert.
-            has_per_expert_activation = is_3d_weight and len(input_tensors[0].shape) == 3
 
             node = wc_params.node_with_weight
-            hessian = self._calculate_hessian(node, input_tensors, has_per_expert_activation)
+            hessian = self._calculate_hessian(node, input_tensors, is_3d_weight)
             weight_tensor = fns.unsqueeze(weight_tensor, 0) if not is_3d_weight else weight_tensor
             scales = []
             zero_points = []
             weights = []
-            for batch_idx in range(weight_tensor.shape[0]):
-                batch_hessian = hessian[batch_idx] if has_per_expert_activation else hessian[0]
+            for batch_idx in range(hessian.shape[0]):
+                batch_hessian = hessian[batch_idx]
                 batch_weight = weight_tensor[batch_idx]
                 reduction_axes = wc_params.reduction_axes
                 assert len(reduction_axes) == 1, "2D reduction axes is not currently supported in GPTQ"
                 wc_params.reduction_axes = (reduction_axes[0] - 1,) if is_3d_weight else reduction_axes
                 # Input tensors is a List of tensors with shape [batch_size, seq_len, hidden_dim] for 3D weights case
                 # So we need to prepare the list by selecting only the current batch inputs only
-                input_tensor = [inp[batch_idx] for inp in input_tensors] if has_per_expert_activation else input_tensors
+                input_tensor = [inp[batch_idx] for inp in input_tensors] if is_3d_weight else input_tensors
                 batch_quantized_weight, batch_scale, batch_zero_point = self._quantize_weights(
                     wc_params, batch_hessian, batch_weight, input_tensor
                 )
@@ -168,9 +163,7 @@ class GPTQ:
                 scales.append(batch_scale)
                 zero_points.append(batch_zero_point)
             scale = fns.stack(scales, axis=0) if is_3d_weight else scales[0]
-            # Symmetric modes produce no zero point, in which case the per-expert list holds only None values.
-            has_zero_points = all(zero_point is not None for zero_point in zero_points)
-            zero_point = fns.stack(zero_points, axis=0) if is_3d_weight and has_zero_points else zero_points[0]
+            zero_point = fns.stack(zero_points, axis=0) if is_3d_weight and None not in zero_points else zero_points[0]
             weight = fns.stack(weights, axis=0) if is_3d_weight else weights[0]
             self._backend_entity.set_weight(wc_params.node_with_weight, wc_params.weight_port_id, model, graph, weight)
             res[wc_params.weight_name] = CompressedWeight(None, scale, zero_point, None)
@@ -204,16 +197,12 @@ class GPTQ:
 
         return self._layerwise_engine.get_statistic_points(model, graph, filtered_nodes)
 
-    def _calculate_hessian(
-        self, node: NNCFNode, inputs: list[Tensor], has_per_expert_activation: bool = False
-    ) -> Tensor:
+    def _calculate_hessian(self, node: NNCFNode, inputs: list[Tensor], is_3d_weight: bool = False) -> Tensor:
         """
         Calculates the Hessian matrix for the given node and inputs.
 
         :param node: The target node for Hessian calculation.
         :param inputs: List of input tensors.
-        :param has_per_expert_activation: Whether the activation carries a per-expert axis, in which case
-            a separate Hessian is calculated for every expert.
         :return: The Hessian matrix as a tensor.
         """
         nsamples = 0
@@ -221,13 +210,12 @@ class GPTQ:
         if node.metatype in self._backend_entity.convolution_metatypes:
             msg = "Convolution metatypes are not supported"
             raise nncf.UnsupportedModelError(msg)
-        # Operations without a transpose attribute, such as GroupedMatMul, never transpose their input.
-        if node.layer_attributes.input_attributes.get("transpose", False):
+        if node.layer_attributes.input_attributes["transpose"]:
             msg = "Transposed input is not supported"
             raise nncf.UnsupportedModelError(msg)
         # Make hessian 3D. Such that for 2D weights it is only 1 batch and can be squeezed later.
         # For 3D weights this dimension matches the weights dimensions
-        hessian_batch = 1 if not has_per_expert_activation else reduce(mul, inputs[0].shape[:-2])
+        hessian_batch = 1 if not is_3d_weight else reduce(mul, inputs[0].shape[:-2])
         hessian = fns.zeros(
             (hessian_batch, inputs[0].shape[-1], inputs[0].shape[-1]),
             backend=inputs[0].backend,
@@ -238,12 +226,12 @@ class GPTQ:
             is_3d_act = len(inp.shape) == 3
             # For 3D weights case, batch size will always be 1. Each "batch"/expert of the activation is treated as
             # single 2D matmuls
-            batch_size = 1 if has_per_expert_activation or not is_3d_act else inp.shape[0]
+            batch_size = 1 if is_3d_weight or not is_3d_act else inp.shape[0]
             if node.metatype in self._backend_entity.matmul_metatypes:
                 # For 3D act + 2D weight case we should reshape activation to 2D to match weight
                 # For 3D act + 3D weight it should remain in 3D and the last 2 dimensions should be activation per
                 # batch/0-th dimension
-                if is_3d_act and not has_per_expert_activation:
+                if is_3d_act and not is_3d_weight:
                     inp = inp.reshape((-1, inp.shape[-1]))
                 inp = fns.moveaxis(inp, -1, -2)
             hessian *= nsamples / (nsamples + batch_size)
@@ -272,10 +260,7 @@ class GPTQ:
         if wc_params.node_with_weight.metatype in self._backend_entity.convolution_metatypes:
             msg = "Convolution metatypes are not supported"
             raise RuntimeError(msg)
-        const_attributes = wc_params.node_with_weight.layer_attributes.constant_attributes[wc_params.weight_port_id]
-        # Operations without a transpose attribute, such as GroupedMatMul, always store their weights in the
-        # [..., out_features, in_features] layout which is the one the algorithm expects.
-        if not const_attributes.get("transpose", True):
+        if not wc_params.node_with_weight.layer_attributes.constant_attributes[wc_params.weight_port_id]["transpose"]:
             msg = "Transpose is not supported"
             raise RuntimeError(msg)
 

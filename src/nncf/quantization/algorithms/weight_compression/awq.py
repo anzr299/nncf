@@ -169,10 +169,11 @@ class AWQ(Algorithm):
                 graph, wp.node_with_weight
             )
 
-            # A 3D weight holds one matrix per expert. When the activation carries no matching per-expert axis,
-            # as for the OpenVINO GroupedMatMul, all the experts consume the very same activation and therefore
-            # have to share a single scale.
-            has_shared_activation = len(weight.shape) == 3 and len(act_shape) < 3
+            # A 3D weight holds one matrix per expert. The activation carries a matching per-expert axis only
+            # when its rank is 3, which is also the condition under which the statistics keep that axis. In
+            # any other case, as for the OpenVINO GroupedMatMul, all the experts consume the very same
+            # activation and therefore have to share a single scale.
+            has_shared_activation = len(weight.shape) == 3 and len(act_shape) != 3
 
             is_mergeable = False
             # A shared scale cannot be merged into the previous weight: it would have to be applied to the

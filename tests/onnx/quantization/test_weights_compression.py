@@ -526,6 +526,11 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
         return mb.build(opset_version=21)
 
     @staticmethod
+    def get_grouped_matmul_model(num_stages: int) -> onnx.ModelProto:
+        msg = "There is no operation which applies per-expert weights to a shared activation in this backend."
+        raise NotImplementedError(msg)
+
+    @staticmethod
     def get_moe_model_for_test_scale_estimation(transpose_a: bool) -> onnx.ModelProto:
         if transpose_a:
             msg = "ONNX does not support transpose_a + MoE"

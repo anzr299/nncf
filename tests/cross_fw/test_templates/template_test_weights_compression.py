@@ -59,6 +59,13 @@ MAX_BASELINE_SCORE = 1 / 1.1920928955078125e-07
 
 INT4_MODES = (CompressWeightsMode.INT4_SYM, CompressWeightsMode.INT4_ASYM)
 
+# Shapes of the model returned by get_grouped_matmul_model
+GROUPED_MM_NUM_EXPERTS = 2
+GROUPED_MM_HIDDEN_DIM = 8
+GROUPED_MM_OUT_DIM = 16
+GROUPED_MM_NUM_TOKENS = 4
+GROUPED_MM_GROUP_SIZE = 4
+
 
 def get_relative_error(weight_1: Tensor, weight_2: Tensor, axis: int = 0) -> Tensor:
     diff = (weight_1 - weight_2) ** 2
@@ -1091,3 +1098,110 @@ class TemplateWeightCompression(ABC):
                 all_layers=True,
                 **kwargs,
             )
+
+    # Grouped MatMul Tests
+
+    @staticmethod
+    @abstractmethod
+    def get_grouped_matmul_model(num_stages: int) -> TModel:
+        """
+        Returns a backend model in which one weight matrix per expert is applied to a single activation
+        shared between all the experts, the way the OpenVINO GroupedMatMul operation does. The stages are
+        chained through an activation function.
+
+        :raises NotImplementedError: If the backend has no operation with such a layout.
+        """
+
+    def test_scale_estimation_for_grouped_matmul(self, mocker):
+        """Checks that a scale is estimated per expert from the activation shared between the experts."""
+        try:
+            model = self.get_grouped_matmul_model(num_stages=1)
+        except NotImplementedError:
+            pytest.skip("Per-expert weights applied to a shared activation are not supported")
+
+        input = 0.01 * np.arange(0, GROUPED_MM_NUM_TOKENS * GROUPED_MM_HIDDEN_DIM, dtype=np.float32) + 0.02
+        input = self.to_tensor(input.reshape(GROUPED_MM_NUM_TOKENS, GROUPED_MM_HIDDEN_DIM))
+        dataset = Dataset([input + i for i in range(4)], self.get_transform_func())
+        calc_q_params_spy = mocker.spy(ScaleEstimation, "calculate_quantization_params")
+
+        with SpyWeightCompressionStatisticsContext(mocker):
+            compress_weights(
+                model,
+                mode=CompressWeightsMode.INT4_ASYM,
+                ratio=1.0,
+                group_size=GROUPED_MM_GROUP_SIZE,
+                all_layers=True,
+                scale_estimation=True,
+                dataset=dataset,
+            )
+
+        # The scale is estimated only for the nodes for which activation statistics were collected.
+        assert calc_q_params_spy.call_count == 1
+        # A scale per expert, per output channel and per group of input channels.
+        assert calc_q_params_spy.spy_return[0].shape == (
+            GROUPED_MM_NUM_EXPERTS,
+            GROUPED_MM_OUT_DIM,
+            GROUPED_MM_HIDDEN_DIM // GROUPED_MM_GROUP_SIZE,
+            1,
+        )
+
+    def test_awq_for_grouped_matmul(self, mocker):
+        """Checks that the experts share a single AWQ scale, which is inserted on their shared activation."""
+        try:
+            model = self.get_grouped_matmul_model(num_stages=2)
+        except NotImplementedError:
+            pytest.skip("Per-expert weights applied to a shared activation are not supported")
+
+        input = 0.01 * np.arange(0, GROUPED_MM_NUM_TOKENS * GROUPED_MM_HIDDEN_DIM, dtype=np.float32) + 0.02
+        input = self.to_tensor(input.reshape(GROUPED_MM_NUM_TOKENS, GROUPED_MM_HIDDEN_DIM))
+        dataset = Dataset([input + i for i in range(4)], self.get_transform_func())
+        awq_step_spy = mocker.spy(AWQ, "_data_aware_step")
+
+        compressed_model = compress_weights(
+            model,
+            mode=CompressWeightsMode.INT4_ASYM,
+            ratio=1.0,
+            group_size=GROUPED_MM_GROUP_SIZE,
+            all_layers=True,
+            awq=True,
+            dataset=dataset,
+        )
+
+        # Only the second stage is preceded by an activation function, so only it matches an AWQ pattern.
+        assert awq_step_spy.call_count == 1
+        # A single scale per input channel is shared by all the experts, instead of one scale per expert.
+        assert awq_step_spy.spy_return.shape == (GROUPED_MM_OUT_DIM,)
+        # The reciprocal scale is inserted on the activation shared by the experts.
+        assert self.get_num_multiply_from_awq(compressed_model) == 1
+
+    def test_shared_activation_statistics_match_per_expert_ones(self):
+        """Checks that statistics shared between the experts give the same result as per-expert ones."""
+        num_experts, out_features, in_features, num_tokens, num_samples, group_size = 4, 6, 16, 5, 3, 8
+        rng = np.random.default_rng(seed=0)
+
+        weight = Tensor(self.to_tensor(rng.normal(size=(num_experts, out_features, in_features)).astype(np.float32)))
+        config = WeightCompressionConfig(mode=CompressWeightsMode.INT4_ASYM, group_size=group_size)
+        activations = [rng.normal(size=(num_tokens, in_features)).astype(np.float32) for _ in range(num_samples)]
+
+        shared_statistics = WCTensorStatistic(
+            mean_values=[Tensor(self.to_tensor(activation.mean(axis=0))) for activation in activations],
+            shape_values=[activation.shape for activation in activations],
+        )
+        per_expert_statistics = WCTensorStatistic(
+            mean_values=[
+                Tensor(self.to_tensor(np.broadcast_to(activation.mean(axis=0), (num_experts, in_features)).copy()))
+                for activation in activations
+            ],
+            shape_values=[(num_experts, *activation.shape) for activation in activations],
+        )
+
+        shared_scale, shared_zero_point = ScaleEstimation.calculate_quantization_params(
+            shared_statistics, weight, (2,), config, act_ch_axis=1
+        )
+        per_expert_scale, per_expert_zero_point = ScaleEstimation.calculate_quantization_params(
+            per_expert_statistics, weight, (2,), config, act_ch_axis=2
+        )
+
+        assert shared_scale.shape == (num_experts, out_features, in_features // group_size, 1)
+        assert fns.allclose(shared_scale, per_expert_scale)
+        assert fns.allclose(shared_zero_point, per_expert_zero_point)

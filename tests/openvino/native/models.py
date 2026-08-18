@@ -104,7 +104,7 @@ class GroupedMatMulModel(OVReferenceModel):
     Several stages can be chained through an activation function, mirroring the projections of an MoE block.
     """
 
-    def _create_ov_model(self, num_experts=3, hidden_dim=8, out_dim=16, num_tokens=6, num_stages=1):
+    def _create_ov_model(self, num_experts=2, hidden_dim=8, out_dim=16, num_tokens=4, num_stages=1):
         input_1 = opset.parameter([num_tokens, hidden_dim], name="Input")
 
         # Cumulative end-offsets which split the rows of the activation evenly between the experts. They are

@@ -598,6 +598,11 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
         return LinearModel()
 
     @staticmethod
+    def get_grouped_matmul_model(num_stages: int) -> torch.nn.Module:
+        msg = "There is no operation which applies per-expert weights to a shared activation in this backend."
+        raise NotImplementedError(msg)
+
+    @staticmethod
     def get_moe_model_for_test_scale_estimation(transpose_a: bool):
         if transpose_a:
             pytest.skip("transpose_a=True is not supported for PT backend")
