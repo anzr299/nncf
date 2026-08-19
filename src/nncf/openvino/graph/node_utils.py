@@ -535,10 +535,8 @@ def get_weight_channel_axes(node: NNCFNode) -> list[int]:
     if node.metatype in CONV_OPERATIONS:
         weights_layout = get_conv_weights_layout_from_node(node)
         return [idx for idx, elem in enumerate(weights_layout) if elem in [OVLayoutElem.GROUPS, OVLayoutElem.C_OUT]]
-    if node.metatype == OVMatMulMetatype:
+    if node.metatype in [OVMatMulMetatype, OVGroupedMatMulMetatype]:
         return get_matmul_channel_axes(node)
-    if node.metatype == OVGroupedMatMulMetatype:
-        return [0, 1]
     return node.metatype.const_channel_axis
 
 
@@ -645,13 +643,9 @@ def get_activation_channel_axis(node: NNCFNode, port_id: int, input_shape: tuple
     channel_axis = 1
 
     # But the MatMul layers may transpose inputs internally.
-    if node.metatype == OVMatMulMetatype:
+    if node.metatype in [OVMatMulMetatype, OVGroupedMatMulMetatype]:
         activations_layout = get_linear_activations_layout_from_node(node, port_id, input_shape)
         channel_axis = activations_layout.index(OVLayoutElem.C_IN)
-    elif node.metatype == OVGroupedMatMulMetatype:
-        # GroupedMatMul multiplies mat_a of shape [total_tokens, K] (or [G, M, K]) by mat_b of shape [G, N, K],
-        # so the reduction is always performed over the last axis of the activation.
-        channel_axis = len(input_shape) - 1
 
     return channel_axis
 

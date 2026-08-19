@@ -159,7 +159,8 @@ def test_get_weight_channel_axes_for_matmul(weights_port_id, transpose, shape, d
 
 def test_get_weight_channel_axes_for_grouped_matmul():
     SHAPE = (256, 2048, 512)
-    constant_attrs = {1: {"name": "mat_b", "shape": SHAPE, "dtype": "f32"}}
+    # The per-group weights of GroupedMatMul are always given as [num_groups, N, K].
+    constant_attrs = {1: {"name": "mat_b", "shape": SHAPE, "dtype": "f32", "transpose": True}}
     attributes = {
         NNCFNode.ID_NODE_ATTR: 0,
         NNCFNode.NODE_NAME_ATTR: "test",
@@ -185,7 +186,7 @@ def test_get_weight_channel_axes_for_grouped_matmul():
 )
 def test_get_activation_channel_axis_for_grouped_matmul(input_shape, expected_channel_axis):
     SHAPE = (256, 1024, 2048)
-    constant_attrs = {1: {"name": "mat_b", "shape": SHAPE, "dtype": "f32"}}
+    constant_attrs = {1: {"name": "mat_b", "shape": SHAPE, "dtype": "f32", "transpose": True}}
     attributes = {
         NNCFNode.ID_NODE_ATTR: 0,
         NNCFNode.NODE_NAME_ATTR: "test",
@@ -193,6 +194,7 @@ def test_get_activation_channel_axis_for_grouped_matmul(input_shape, expected_ch
         NNCFNode.LAYER_ATTRIBUTES: OVLayerAttributes(
             layer_attributes=GenericWeightedLayerAttributes(False, SHAPE),
             constant_attributes=constant_attrs,
+            inputs_attributes={"transpose": False},
         ),
     }
     node = NNCFNode(attributes)

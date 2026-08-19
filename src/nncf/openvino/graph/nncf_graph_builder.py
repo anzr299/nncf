@@ -217,8 +217,12 @@ class GraphConverter:
                     elif metatype == OVGRUSequenceMetatype:
                         node_attributes = node.get_attributes()
                         act_attrs["linear_before_reset"] = node_attributes["linear_before_reset"]
-
-                    # NOTE: GroupedMatMul operation has no attributes.
+                    elif metatype == OVGroupedMatMulMetatype:
+                        # GroupedMatMul has no attributes, but its layout is fixed by the operation itself:
+                        # the per-group weights are always given as [num_groups, N, K], which is the layout
+                        # of a MatMul with transposed weights, and the activation is never transposed.
+                        const_attrs[const_port_id]["transpose"] = True
+                        act_attrs["transpose"] = False
 
                     if const_attrs or act_attrs:
                         nncf_node = nncf_graph.get_node_by_name(node_name)

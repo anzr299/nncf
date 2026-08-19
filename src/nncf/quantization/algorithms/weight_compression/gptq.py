@@ -140,6 +140,14 @@ class GPTQ:
 
             is_3d_weight = len(weight_tensor.shape) == 3
 
+            # 2D activation with 3D weights such as in grouped matmul is not supported yet for GPTQ algorithm
+            if is_3d_weight and len(input_tensors[0].shape) != 3:
+                msg = (
+                    "Weights with one matrix per expert applied to a shared activation are not supported yet"
+                    "for the GPTQ algorithm"
+                )
+                raise nncf.UnsupportedModelError(msg)
+
             node = wc_params.node_with_weight
             hessian = self._calculate_hessian(node, input_tensors, is_3d_weight)
             weight_tensor = fns.unsqueeze(weight_tensor, 0) if not is_3d_weight else weight_tensor
