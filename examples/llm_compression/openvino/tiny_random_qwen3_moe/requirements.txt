@@ -1,4 +1,6 @@
 git+https://github.com/mitruska/optimum-intel.git@force_grouped_mm
+git+https://github.com/huggingface/optimum-intel.git@e53520ce0fdd9d12d6e249cb3a5ca8c8b6f1064e
+
 --extra-index-url https://storage.openvinotoolkit.org/simple/wheels/nightly
 --pre
 openvino
