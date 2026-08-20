@@ -11,12 +11,13 @@
 
 import warnings
 
-import numpy as np
-import openvino as ov
+import torch
+from datasets import load_dataset
 from optimum.intel.openvino import OVModelForVisualCausalLM
 from torch.jit import TracerWarning
 from transformers import AutoTokenizer
 from transformers import logging
+import openvino as ov
 
 import nncf
 
@@ -24,8 +25,11 @@ logging.set_verbosity_error()
 warnings.filterwarnings("ignore", category=TracerWarning)
 
 
-MODEL_ID = "optimum-intel-internal-testing/tiny-random-qwen3.5-moe"
-COMPRESSED_MODEL_ID = "tiny-random-qwen3.5-moe_compressed"
+# MODEL_ID = "optimum-intel-internal-testing/tiny-random-qwen3.5-moe"
+MODEL_ID = "Qwen/Qwen3.5-35B-A3B"
+# COMPRESSED_MODEL_ID = "tiny-random-qwen3.5-moe_compressed"
+# COMPRESSED_MODEL_ID = "/data/anazir/models/qwen3.5-moe-with-groupedmm"
+COMPRESSED_MODEL_ID = "/data/anazir/models/qwen3.5-moe-with-bmm"
 
 
 def generate_answers(
@@ -100,25 +104,39 @@ def load_model_and_tokenizer(model_id: str, export: bool = True) -> tuple[OVMode
     return model, tokenizer
 
 
-def get_dummy_dataset(model: ov.Model, seq_len: int = 16) -> nncf.Dataset:
+def get_wikitext_dataset(
+    model: OVModelForVisualCausalLM, tokenizer: AutoTokenizer, num_samples: int = 32, seq_len: int = 1024
+) -> nncf.Dataset:
     """
-    Build a dummy calibration dataset holding a single all-ones sample.
+    Build a text-only calibration dataset for the language model from wikitext2.
 
-    :param model: The OV model
-    :param seq_len: Sequence length of the synthetic sample.
-    :return: An NNCF dataset with a single sample.
+    :param model: The model whose language model will be calibrated.
+    :param tokenizer: The tokenizer to use for encoding the text.
+    :param num_samples: Number of calibration samples to collect. Defaults to 32.
+    :param seq_len: Maximum sequence length of each sample. Defaults to 1024.
+    :return: An nncf.Dataset with inputs of the language model.
     """
-    # The language model of a visual causal LM is fed with embeddings, not with token ids.
-    hidden_size = model.input("inputs_embeds").get_partial_shape()[2].get_length()
+    samples = []
+    for item in load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train"):
+        if len(item["text"]) < 100:
+            continue
+        input_ids = tokenizer(item["text"], return_tensors="pt").input_ids[:, :seq_len]
+        attention_mask = torch.ones_like(input_ids)
+        inputs_embeds, attention_mask, position_ids = model.get_multimodal_embeddings(
+            input_ids=input_ids, pixel_values=None, attention_mask=attention_mask
+        )
+        samples.append(
+            model.language_model.prepare_inputs(
+                input_ids=None,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+            )
+        )
+        if len(samples) == num_samples:
+            break
 
-    inputs = {
-        "inputs_embeds": np.ones((1, seq_len, hidden_size), dtype=np.float32),
-        "attention_mask": np.ones((1, seq_len), dtype=np.int64),
-        "position_ids": np.ones((4, 1, seq_len), dtype=np.int64),
-        "beam_idx": np.zeros(1, dtype=np.int32),
-    }
-
-    return nncf.Dataset([inputs])
+    return nncf.Dataset(samples)
 
 
 def main() -> None:
@@ -127,15 +145,13 @@ def main() -> None:
     answers_by_questions = generate_answers(QUESTIONS, model, tokenizer)
     print_answers("Non-optimized model outputs:\n", answers_by_questions)
 
-    calibration_dataset = get_dummy_dataset(model.language_model.model)
-
     model.language_model.model = nncf.compress_weights(
         model.language_model.model,
         mode=nncf.CompressWeightsMode.INT4_ASYM,
-        scale_estimation=True,
+        group_size=64,
+        dataset=get_wikitext_dataset(model, tokenizer),
+        # scale_estimation=True,
         awq=True,
-        dataset=calibration_dataset,
-        group_size=16,
         advanced_parameters=nncf.AdvancedCompressionParameters(
             group_size_fallback_mode=nncf.GroupSizeFallbackMode.ADJUST
         ),
@@ -146,6 +162,10 @@ def main() -> None:
 
     model, tokenizer = load_model_and_tokenizer(COMPRESSED_MODEL_ID, False)
     answers_by_questions = generate_answers(QUESTIONS, model, tokenizer)
+    # core = ov.Core()
+    # model.language_model.model = core.compile_model(model.language_model.model, "CPU")
+    # rt_model = model.language_model.model.get_runtime_model()
+    # ov.save_model(rt_model, COMPRESSED_MODEL_ID + "_openvino_rt_model.xml")
     print_answers("Optimized model outputs:\n", answers_by_questions)
 
 
