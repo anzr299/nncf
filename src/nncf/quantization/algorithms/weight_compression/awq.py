@@ -171,14 +171,14 @@ class AWQ(Algorithm):
 
             # A 3D weight holds one matrix per expert. The activation carries a matching per-expert axis only
             # when its rank is 3, which is also the condition under which the statistics keep that axis. In
-            # any other case, as for the OpenVINO GroupedMatMul, all the experts consume the very same
-            # activation and therefore have to share a single scale.
-            has_shared_activation = len(weight.shape) == 3 and len(act_shape) != 3
+            # any other case, as for the OpenVINO GroupedMatMul, every expert is applied to the very same
+            # activation and therefore all of them have to share a single scale.
+            experts_share_activation = len(weight.shape) == 3 and len(act_shape) != 3
 
             is_mergeable = False
             # A shared scale cannot be merged into the previous weight: it would have to be applied to the
             # output channels of every expert matrix, which the merging below does not express.
-            if not has_shared_activation and self._backend_entity.is_node_with_weights(merge_node, graph):
+            if not experts_share_activation and self._backend_entity.is_node_with_weights(merge_node, graph):
                 mergeable_node_weight_data = self._backend_entity.get_weight_names_and_port_ids(merge_node, graph)
                 merge_node_weight_ndims = [
                     len(self._backend_entity.get_weight_shape(merge_node, port_id, graph))
@@ -195,7 +195,7 @@ class AWQ(Algorithm):
             #          3D -> 3 - reduction_axes (reduction_axes=1) = 2
             #          4D -> 5 - reduction_axes (reduction_axes=1) = 4
             weight_scale_reduction_axes = (weight_ndim * 2) - 3 - wp.reduction_axes[0]
-            if has_shared_activation:
+            if experts_share_activation:
                 # The scale is shared between the experts, so it is reduced over the expert axis as well.
                 weight_scale_reduction_axes = tuple(i for i in range(weight_ndim) if i != wp.reduction_axes[0])
             if is_data_free:
@@ -211,7 +211,7 @@ class AWQ(Algorithm):
                     prev_statistics = statistics[merge_node.node_name]
                 scale = self._data_aware_step(wp, weight, statistics[k], act_ch_axis, prev_weight, prev_statistics)
 
-            if has_shared_activation:
+            if experts_share_activation:
                 # The scale has a single element per input channel and is broadcast to every expert matrix.
                 w_scale_shape = [1] * weight_ndim
                 w_scale_shape[wp.reduction_axes[0]] = scale.shape[-1]
