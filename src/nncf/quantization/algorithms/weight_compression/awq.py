@@ -171,7 +171,7 @@ class AWQ(Algorithm):
 
             # We have a special case when activation is 2D and weights are 3D. In this case, we
             # fold the weight batch axis into the output channel axis, so that the weight and activation shapes match.
-            experts_share_activation = len(weight.shape) == 3 and len(act_shape) != 3
+            is_weight_3d_act_2d = len(weight.shape) == 3 and len(act_shape) != 3
 
             is_mergeable = False
             if self._backend_entity.is_node_with_weights(merge_node, graph):
@@ -191,8 +191,8 @@ class AWQ(Algorithm):
             #          3D -> 3 - reduction_axes (reduction_axes=1) = 2
             #          4D -> 5 - reduction_axes (reduction_axes=1) = 4
             weight_scale_reduction_axes = (weight_ndim * 2) - 3 - wp.reduction_axes[0]
-            if experts_share_activation:
-                # The scale is shared between the experts, so it is reduced over the expert axis as well.
+            if is_weight_3d_act_2d:
+                # The scale is shared, so it is reduced over the weight batch axis as well.
                 weight_scale_reduction_axes = tuple(i for i in range(weight_ndim) if i != wp.reduction_axes[0])
             if is_data_free:
                 scale = self._data_free_step(weight, axis=weight_scale_reduction_axes)
@@ -207,8 +207,8 @@ class AWQ(Algorithm):
                     prev_statistics = statistics[merge_node.node_name]
                 scale = self._data_aware_step(wp, weight, statistics[k], act_ch_axis, prev_weight, prev_statistics)
 
-            if experts_share_activation:
-                # The scale has a single element per input channel and is broadcast to every expert matrix.
+            if is_weight_3d_act_2d:
+                # The scale has a single element per input channel and is broadcast over the weight batch axis.
                 w_scale_shape = [1] * weight_ndim
                 w_scale_shape[wp.reduction_axes[0]] = scale.shape[-1]
                 w_scale = fns.reshape(scale, tuple(w_scale_shape))
@@ -220,8 +220,8 @@ class AWQ(Algorithm):
             self._backend_entity.set_weight(wp.node_with_weight, weight_port_id, model, graph, scaled_weight)
 
             if is_mergeable:  # for MatMul->Multiply->MatMul pattern the scale is merged to the first MatMul
-                if experts_share_activation:
-                    # The shared scale is applied to the output channels of every expert of the previous weight.
+                if is_weight_3d_act_2d:
+                    # The shared scale is applied to the output channels of the whole previous weight batch.
                     a_scale_shape = [1] * weight_ndim
                     a_scale_shape[wp.reduction_axes[0] - 1] = a_scale.shape[-1]
                     a_scale = fns.reshape(a_scale, tuple(a_scale_shape))
@@ -274,12 +274,11 @@ class AWQ(Algorithm):
             # of the weight into the output channel axis. This is done so that the AWQ scale can match
             # the activation shape. The rest of the algorithm will treat the weight as if it were 2D.
             # [batch_size, out_features, hidden_dim] -> [batch_size * out_features, hidden_dim]
+            # The reduced axis is moved last first, so [batch_size, hidden_dim, out_features] folds the same.
             reduction_channels = weight.shape[reduction_axis]
-            # [batch_size, out_features, hidden_dim] -> [num_experts, hidden_dim, out_features]
-            # [num_experts, hidden_dim, out_features] -> reshape -> [num_experts * out_features, hidden_dim]
             weight = fns.moveaxis(weight, reduction_axis, -1).reshape((-1, reduction_channels))
             if prev_weight is not None and prev_weight.ndim == 3:
-                # The experts share one scale, so the overflow check below uses their largest magnitudes.
+                # One scale is shared, so the overflow check below uses the largest magnitudes of the batch.
                 prev_weight = fns.max(fns.abs(prev_weight), axis=0)
             reduction_axis = 1
 

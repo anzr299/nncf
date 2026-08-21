@@ -2430,7 +2430,9 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
         return SimpleMoEModel(transpose_a=transpose_a).ov_model
 
     @staticmethod
-    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool) -> ov.Model:
+    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool, grouped_mm: bool = False) -> ov.Model:
+        if grouped_mm:
+            return GroupedMatMulModel(mergeable=not non_mergable_pattern).ov_model
         # if is_3d_weights:
         #     return AWQMatmulModel3D(non_mergable_pattern=non_mergable_pattern).ov_model
         return AWQMatmulModel(non_mergable_pattern=non_mergable_pattern, is_3d_weights=is_3d_weights).ov_model
@@ -2862,6 +2864,12 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
                         [[5.1277137, 5.0582132, 4.8410268, 4.6444707, 4.465559, 4.3018713, 4.151423, 4.0125704]],
                         dtype=np.float32,
                     )
+                ),
+                "GroupedMatMul_1": Tensor(
+                    np.array(
+                        [[2.2574472, 1.5795753, 1.6124371, 1.360043, 1.5104725, 2.2070484, 2.1953387, 2.0040214]],
+                        dtype=np.float32,
+                    ).reshape(1, 8, 1)
                 ),
             },
         }

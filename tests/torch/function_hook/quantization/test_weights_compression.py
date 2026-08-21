@@ -611,7 +611,10 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
         return model
 
     @staticmethod
-    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool) -> torch.nn.Module:
+    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool, grouped_mm: bool = False) -> torch.nn.Module:
+        if grouped_mm:
+            msg = "GroupedMatMul is not supported in the PyTorch backend."
+            raise NotImplementedError(msg)
         if not is_3d_weights:
             return AWQLinearModel(non_mergable_pattern=non_mergable_pattern)
         return AWQLinearModel3D(non_mergable_pattern=non_mergable_pattern)

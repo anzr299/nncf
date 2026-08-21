@@ -768,7 +768,10 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
         return awq_num
 
     @staticmethod
-    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool) -> onnx.ModelProto:
+    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool, grouped_mm: bool = False) -> onnx.ModelProto:
+        if grouped_mm:
+            msg = "GroupedMatMul is not supported in the ONNX backend."
+            raise NotImplementedError(msg)
         """
         Builds a model to be used in the following tests:
             - TemplateWeightCompression.test_awq_with_ignored_scope()

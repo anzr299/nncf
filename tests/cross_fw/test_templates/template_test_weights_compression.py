@@ -672,10 +672,12 @@ class TemplateWeightCompression(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool) -> TModel:
+    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool, grouped_mm: bool = False) -> TModel:
         """
         Returns a backend model for test_awq_with_ignored_scope."
         :param is_3d_weights: The model has 3d weights
+        :param grouped_mm: The 3d weights are applied as a GroupedMatMul
+        :raises NotImplementedError: If grouped_mm is not supported by the backend.
         """
 
     @staticmethod
@@ -787,6 +789,7 @@ class TemplateWeightCompression(ABC):
             ("moe_bmm", False, True),
             ("moe_bmm", False, False),
             ("moe_grouped_mm", False, True),
+            ("moe_grouped_mm", False, False),
         ],
     )
     def test_awq_scale_reference(
@@ -802,7 +805,7 @@ class TemplateWeightCompression(ABC):
         is_3d_weights = model_type == "moe_bmm"
         if model_type == "moe_grouped_mm":
             try:
-                model = self.get_moe_model_for_test_scale_estimation(transpose_a=False, grouped_mm=True)
+                model = self.get_awq_model(non_mergable_pattern, is_3d_weights=False, grouped_mm=True)
             except NotImplementedError as e:
                 pytest.xfail(str(e))
             INPUT_SHAPE = (4, 8)

@@ -381,7 +381,12 @@ class TestFXTemplateWeightCompression(TemplateWeightCompression):
         return exported_model
 
     @staticmethod
-    def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool) -> torch.fx.GraphModule:
+    def get_awq_model(
+        non_mergable_pattern: bool, is_3d_weights: bool, grouped_mm: bool = False
+    ) -> torch.fx.GraphModule:
+        if grouped_mm:
+            msg = "GroupedMatMul is not supported in the Torch FX backend."
+            raise NotImplementedError(msg)
         model = AWQLinearModel(non_mergable_pattern=non_mergable_pattern)
         if is_3d_weights:
             model = AWQLinearModel3D(non_mergable_pattern=non_mergable_pattern)
