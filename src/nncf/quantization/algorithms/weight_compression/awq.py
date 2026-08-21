@@ -268,13 +268,14 @@ class AWQ(Algorithm):
         reduction_axis = wp.reduction_axes[0]
 
         if weight.ndim == 3 and X.ndim == 2:
-            # A 3D weight applied to a single shared activation, as for the OpenVINO GroupedMatMul. All the
-            # experts must share one scale, so the expert axis is folded into the output channels: the search
-            # below then minimizes the quantization error over all the experts at once.
-            if reduction_axis == 1:
-                # [num_experts, hidden_dimension, out_features] -> [num_experts, out_features, hidden_dimension]
-                weight = fns.moveaxis(weight, -1, -2)
-            weight = weight.reshape((-1, weight.shape[-1]))
+            # In the case where weights are in 3D and activation in 2D, we must fold the batch axis
+            # of the weight into the output channel axis. This is done so that the AWQ scale can match
+            # the activation shape. The rest of the algorithm will treat the weight as if it were 2D.
+            # [batch_size, out_features, hidden_dim] -> [batch_size * out_features, hidden_dim]
+            reduction_channels = weight.shape[reduction_axis]
+            # [batch_size, out_features, hidden_dim] -> [num_experts, hidden_dim, out_features]
+            # [num_experts, hidden_dim, out_features] -> reshape -> [num_experts * out_features, hidden_dim]
+            weight = fns.moveaxis(weight, reduction_axis, -1).reshape((-1, reduction_channels))
             reduction_axis = 1
 
         is_2d_weight = weight.ndim == 2
