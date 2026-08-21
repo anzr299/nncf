@@ -537,6 +537,8 @@ def get_weight_channel_axes(node: NNCFNode) -> list[int]:
         return [idx for idx, elem in enumerate(weights_layout) if elem in [OVLayoutElem.GROUPS, OVLayoutElem.C_OUT]]
     if node.metatype == OVMatMulMetatype:
         return get_matmul_channel_axes(node)
+    if node.metatype == OVGroupedMatMulMetatype:
+        return [0, 1]
     return node.metatype.const_channel_axis
 
 

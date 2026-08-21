@@ -749,7 +749,6 @@ class OVGroupedMatMulMetatype(OVOpMetatype):
     name = "GroupedMatMulOp"
     op_names = ["GroupedMatMul"]
     output_channel_axis = -1
-    const_channel_axis = [0, 1]  # const layout: [num_groups, out_features, in_features]
 
 
 def get_operator_metatypes() -> list[type[OperatorMetatype]]:
