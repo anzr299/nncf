@@ -861,7 +861,7 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
     @pytest.fixture
     def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
         return {
-            "2d": {
+            "reg": {
                 "Gemm_1": Tensor(np.array([[14.299703], [8.364688]], dtype=np.float32)),
                 "MatMul_3": Tensor(
                     np.array(
@@ -900,7 +900,7 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-            "3d": {
+            "moe_bmm": {
                 "MatMul_3": Tensor(
                     np.array(
                         [

@@ -858,7 +858,7 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
     @pytest.fixture
     def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
         return {
-            "2d": {
+            "reg": {
                 "linear3/linear/0": Tensor(
                     torch.tensor(
                         [
@@ -894,7 +894,7 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-            "3d": {
+            "moe_bmm": {
                 "/bmm/2": Tensor(
                     torch.tensor(
                         [

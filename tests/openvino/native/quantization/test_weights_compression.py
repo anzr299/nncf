@@ -2761,7 +2761,7 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
     @pytest.fixture
     def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
         return {
-            "2d": {
+            "reg": {
                 "MatMul": Tensor(np.array([[10.337929], [6.4558873]], dtype=np.float32)),
                 "MatMul_3": Tensor(
                     np.array(
@@ -2798,7 +2798,7 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-            "3d": {
+            "moe_bmm": {
                 "MatMul": Tensor(
                     np.array(
                         [
@@ -2856,7 +2856,7 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-            "grouped_mm": {
+            "moe_grouped_mm": {
                 "GroupedMatMul": Tensor(
                     np.array(
                         [[5.1277137, 5.0582132, 4.8410268, 4.6444707, 4.465559, 4.3018713, 4.151423, 4.0125704]],

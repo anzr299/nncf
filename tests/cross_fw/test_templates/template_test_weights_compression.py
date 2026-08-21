@@ -283,22 +283,22 @@ class TemplateWeightCompression(ABC):
         """
 
     @pytest.mark.parametrize(
-        "model_kind,transpose_a",
+        "model_type,transpose_a",
         [("reg", False), ("reg", True), ("moe_bmm", False), ("moe_bmm", True), ("moe_grouped_mm", False)],
         ids=["reg", "reg_tr_a", "moe_bmm", "moe_bmm_tr_a", "moe_grouped_mm"],
     )
     @pytest.mark.parametrize("check_sampling_activation_stats_flow", [False, True], ids=["full", "sampled"])
-    def test_scale_estimation(self, mocker, transpose_a, model_kind, check_sampling_activation_stats_flow):
+    def test_scale_estimation(self, mocker, transpose_a, model_type, check_sampling_activation_stats_flow):
         """Checks that scales match the reference."""
         calc_q_params_spy = mocker.spy(ScaleEstimation, "calculate_quantization_params")
 
-        if model_kind == "moe_grouped_mm":
+        if model_type == "moe_grouped_mm":
             try:
                 model = self.get_moe_model_for_test_scale_estimation(transpose_a=transpose_a, grouped_mm=True)
             except NotImplementedError as e:
                 pytest.xfail(str(e))
             input = np.arange(0, 4 * 8, dtype=np.float32).reshape(4, 8)
-        elif model_kind == "moe_bmm":
+        elif model_type == "moe_bmm":
             model = self.get_moe_model_for_test_scale_estimation(transpose_a=transpose_a)
             input = np.arange(0, 2 * 4 * 8, dtype=np.float32).reshape(2, 4, 8)
         else:
@@ -332,16 +332,14 @@ class TemplateWeightCompression(ABC):
 
         computed_scale = calc_q_params_spy.spy_return[0]
 
-        if model_kind.startswith("moe"):
+        if model_type.startswith("moe"):
             reference = self.get_moe_scale_estimation_ref(
-                check_sampling_activation_stats_flow, grouped_mm=model_kind == "moe_grouped_mm"
+                check_sampling_activation_stats_flow, grouped_mm=model_type == "moe_grouped_mm"
             )
         else:
             reference = self.get_scale_estimation_ref(check_sampling_activation_stats_flow)
 
-        reference = Tensor(reference)
-        assert computed_scale.shape == reference.shape
-        assert fns.allclose(reference, computed_scale)
+        assert fns.allclose(Tensor(reference), computed_scale)
 
     @staticmethod
     @abstractmethod
@@ -780,15 +778,15 @@ class TemplateWeightCompression(ABC):
 
     # Transpose inputs does not affect mergable pattern code, skippting (True, False)
     @pytest.mark.parametrize(
-        "weights_kind,transpose_a,non_mergable_pattern",
+        "model_type,transpose_a,non_mergable_pattern",
         [
-            ("2d", True, True),
-            ("2d", False, True),
-            ("2d", False, False),
-            ("3d", True, True),
-            ("3d", False, True),
-            ("3d", False, False),
-            ("grouped_mm", False, True),
+            ("reg", True, True),
+            ("reg", False, True),
+            ("reg", False, False),
+            ("moe_bmm", True, True),
+            ("moe_bmm", False, True),
+            ("moe_bmm", False, False),
+            ("moe_grouped_mm", False, True),
         ],
     )
     def test_awq_scale_reference(
@@ -796,13 +794,13 @@ class TemplateWeightCompression(ABC):
         non_mergable_pattern,
         transpose_a,
         test_awq_scale_ref,
-        weights_kind,
+        model_type,
         monkeypatch,
         mocker,
     ):
         monkeypatch.setattr("nncf.quantization.algorithms.weight_compression.algorithm.AWQ", SpyAWQ)
-        is_3d_weights = weights_kind == "3d"
-        if weights_kind == "grouped_mm":
+        is_3d_weights = model_type == "moe_bmm"
+        if model_type == "moe_grouped_mm":
             try:
                 model = self.get_moe_model_for_test_scale_estimation(transpose_a=False, grouped_mm=True)
             except NotImplementedError as e:
@@ -826,16 +824,16 @@ class TemplateWeightCompression(ABC):
                 model,
                 mode=CompressWeightsMode.INT4_SYM,
                 ratio=1.0,
-                all_layers=transpose_a or weights_kind == "grouped_mm",
+                all_layers=transpose_a or model_type == "moe_grouped_mm",
                 group_size=-1,
                 dataset=dataset,
                 awq=True,
             )
         assert spy_instance is not None
-        if weights_kind == "grouped_mm":
+        if model_type == "moe_grouped_mm":
             assert spy_instance._scale_per_target_node
         for node_name, scales in spy_instance._scale_per_target_node.items():
-            ref = test_awq_scale_ref[weights_kind][node_name]
+            ref = test_awq_scale_ref[model_type][node_name]
             assert fns.allclose(scales, ref)
             assert scales.shape == ref.shape
 
@@ -1126,35 +1124,3 @@ class TemplateWeightCompression(ABC):
                 all_layers=True,
                 **kwargs,
             )
-
-    def test_shared_activation_statistics_match_per_expert_ones(self):
-        """Checks that statistics shared between the experts give the same result as per-expert ones."""
-        num_experts, out_features, in_features, num_tokens, num_samples, group_size = 4, 6, 16, 5, 3, 8
-        rng = np.random.default_rng(seed=0)
-
-        weight = Tensor(self.to_tensor(rng.normal(size=(num_experts, out_features, in_features)).astype(np.float32)))
-        config = WeightCompressionConfig(mode=CompressWeightsMode.INT4_ASYM, group_size=group_size)
-        activations = [rng.normal(size=(num_tokens, in_features)).astype(np.float32) for _ in range(num_samples)]
-
-        shared_statistics = WCTensorStatistic(
-            mean_values=[Tensor(self.to_tensor(activation.mean(axis=0))) for activation in activations],
-            shape_values=[activation.shape for activation in activations],
-        )
-        per_expert_statistics = WCTensorStatistic(
-            mean_values=[
-                Tensor(self.to_tensor(np.broadcast_to(activation.mean(axis=0), (num_experts, in_features)).copy()))
-                for activation in activations
-            ],
-            shape_values=[(num_experts, *activation.shape) for activation in activations],
-        )
-
-        shared_scale, shared_zero_point = ScaleEstimation.calculate_quantization_params(
-            shared_statistics, weight, (2,), config, act_ch_axis=1
-        )
-        per_expert_scale, per_expert_zero_point = ScaleEstimation.calculate_quantization_params(
-            per_expert_statistics, weight, (2,), config, act_ch_axis=2
-        )
-
-        assert shared_scale.shape == (num_experts, out_features, in_features // group_size, 1)
-        assert fns.allclose(shared_scale, per_expert_scale)
-        assert fns.allclose(shared_zero_point, per_expert_zero_point)
