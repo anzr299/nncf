@@ -59,13 +59,6 @@ MAX_BASELINE_SCORE = 1 / 1.1920928955078125e-07
 
 INT4_MODES = (CompressWeightsMode.INT4_SYM, CompressWeightsMode.INT4_ASYM)
 
-# Shapes of the model returned by get_grouped_matmul_model
-GROUPED_MM_NUM_EXPERTS = 2
-GROUPED_MM_HIDDEN_DIM = 8
-GROUPED_MM_OUT_DIM = 16
-GROUPED_MM_NUM_TOKENS = 4
-GROUPED_MM_GROUP_SIZE = 4
-
 
 def get_relative_error(weight_1: Tensor, weight_2: Tensor, axis: int = 0) -> Tensor:
     diff = (weight_1 - weight_2) ** 2
@@ -263,17 +256,20 @@ class TemplateWeightCompression(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_moe_model_for_test_scale_estimation(transpose_a: bool) -> TModel:
+    def get_moe_model_for_test_scale_estimation(transpose_a: bool, grouped_mm: bool = False) -> TModel:
         """
-        Returns a backend MoE model for test_scale_estimation with 3D weights.
+        Returns a backend MoE model with 3D weights. Could be grouped_mm or batched_mm implementation
+        for the MoE.
+        :raises NotImplementedError: If grouped_mm is not supported by the backend.
         """
 
     @staticmethod
     @abstractmethod
-    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow: bool) -> TTensor:
+    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow: bool, grouped_mm: bool = False) -> TTensor:
         """
         :param check_sampling_activation_stats_flow: whether we are checking the flow with sampling when processing
             activation statistics
+        :param grouped_mm: whether the reference is for the GroupedMatMul MoE model
         Returns the reference output of calculate_quantization_params for MoE model.
         """
 
@@ -286,14 +282,23 @@ class TemplateWeightCompression(ABC):
         Returns the reference output of calculate_quantization_params of ScaleEstimation.
         """
 
-    @pytest.mark.parametrize("transpose_a", [False, True], ids=["no_tr_a", "tr_a"])
-    @pytest.mark.parametrize("is_moe", [False, True], ids=["reg", "moe"])
+    @pytest.mark.parametrize(
+        "model_kind,transpose_a",
+        [("reg", False), ("reg", True), ("moe_bmm", False), ("moe_bmm", True), ("moe_grouped_mm", False)],
+        ids=["reg", "reg_tr_a", "moe_bmm", "moe_bmm_tr_a", "moe_grouped_mm"],
+    )
     @pytest.mark.parametrize("check_sampling_activation_stats_flow", [False, True], ids=["full", "sampled"])
-    def test_scale_estimation(self, mocker, transpose_a, is_moe, check_sampling_activation_stats_flow):
+    def test_scale_estimation(self, mocker, transpose_a, model_kind, check_sampling_activation_stats_flow):
         """Checks that scales match the reference."""
         calc_q_params_spy = mocker.spy(ScaleEstimation, "calculate_quantization_params")
 
-        if is_moe:
+        if model_kind == "moe_grouped_mm":
+            try:
+                model = self.get_moe_model_for_test_scale_estimation(transpose_a=transpose_a, grouped_mm=True)
+            except NotImplementedError as e:
+                pytest.xfail(str(e))
+            input = np.arange(0, 4 * 8, dtype=np.float32).reshape(4, 8)
+        elif model_kind == "moe_bmm":
             model = self.get_moe_model_for_test_scale_estimation(transpose_a=transpose_a)
             input = np.arange(0, 2 * 4 * 8, dtype=np.float32).reshape(2, 4, 8)
         else:
@@ -327,12 +332,16 @@ class TemplateWeightCompression(ABC):
 
         computed_scale = calc_q_params_spy.spy_return[0]
 
-        if is_moe:
-            reference = self.get_moe_scale_estimation_ref(check_sampling_activation_stats_flow)
+        if model_kind.startswith("moe"):
+            reference = self.get_moe_scale_estimation_ref(
+                check_sampling_activation_stats_flow, grouped_mm=model_kind == "moe_grouped_mm"
+            )
         else:
             reference = self.get_scale_estimation_ref(check_sampling_activation_stats_flow)
 
-        assert fns.allclose(Tensor(reference), computed_scale)
+        reference = Tensor(reference)
+        assert computed_scale.shape == reference.shape
+        assert fns.allclose(reference, computed_scale)
 
     @staticmethod
     @abstractmethod
@@ -766,23 +775,40 @@ class TemplateWeightCompression(ABC):
     @staticmethod
     @abstractmethod
     @pytest.fixture
-    def test_awq_scale_ref() -> dict[str, Tensor]:
-        "Returns reference for test_awq_scale_reference."
+    def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
+        "Returns reference for test_awq_scale_reference, keyed by the kind of weights."
 
     # Transpose inputs does not affect mergable pattern code, skippting (True, False)
-    @pytest.mark.parametrize("transpose_a,non_mergable_pattern", [(True, True), (False, True), (False, False)])
-    @pytest.mark.parametrize("is_3d_weights", [True, False])
+    @pytest.mark.parametrize(
+        "weights_kind,transpose_a,non_mergable_pattern",
+        [
+            ("2d", True, True),
+            ("2d", False, True),
+            ("2d", False, False),
+            ("3d", True, True),
+            ("3d", False, True),
+            ("3d", False, False),
+            ("grouped_mm", False, True),
+        ],
+    )
     def test_awq_scale_reference(
         self,
         non_mergable_pattern,
         transpose_a,
         test_awq_scale_ref,
-        is_3d_weights,
+        weights_kind,
         monkeypatch,
         mocker,
     ):
         monkeypatch.setattr("nncf.quantization.algorithms.weight_compression.algorithm.AWQ", SpyAWQ)
-        if transpose_a:
+        is_3d_weights = weights_kind == "3d"
+        if weights_kind == "grouped_mm":
+            try:
+                model = self.get_moe_model_for_test_scale_estimation(transpose_a=False, grouped_mm=True)
+            except NotImplementedError as e:
+                pytest.xfail(str(e))
+            INPUT_SHAPE = (4, 8)
+        elif transpose_a:
             INPUT_SHAPE = (2, 2, 4) if is_3d_weights else (2, 4)
             model = self.get_transposable_awq_model(
                 transpose_a=True, transpose_b=True, input_shape=INPUT_SHAPE, is_3d_weights=is_3d_weights
@@ -800,14 +826,16 @@ class TemplateWeightCompression(ABC):
                 model,
                 mode=CompressWeightsMode.INT4_SYM,
                 ratio=1.0,
-                all_layers=transpose_a,
+                all_layers=transpose_a or weights_kind == "grouped_mm",
                 group_size=-1,
                 dataset=dataset,
                 awq=True,
             )
         assert spy_instance is not None
+        if weights_kind == "grouped_mm":
+            assert spy_instance._scale_per_target_node
         for node_name, scales in spy_instance._scale_per_target_node.items():
-            ref = test_awq_scale_ref[is_3d_weights][node_name]
+            ref = test_awq_scale_ref[weights_kind][node_name]
             assert fns.allclose(scales, ref)
             assert scales.shape == ref.shape
 
@@ -1098,81 +1126,6 @@ class TemplateWeightCompression(ABC):
                 all_layers=True,
                 **kwargs,
             )
-
-    # Grouped MatMul Tests
-
-    @staticmethod
-    @abstractmethod
-    def get_grouped_matmul_model(num_stages: int) -> TModel:
-        """
-        Returns a backend model in which one weight matrix per expert is applied to a single activation
-        shared between all the experts, the way the OpenVINO GroupedMatMul operation does. The stages are
-        chained through an activation function.
-
-        :raises NotImplementedError: If the backend has no operation with such a layout.
-        """
-
-    def test_scale_estimation_for_grouped_matmul(self, mocker):
-        """Checks that a scale is estimated per expert from the activation shared between the experts."""
-        try:
-            model = self.get_grouped_matmul_model(num_stages=1)
-        except NotImplementedError:
-            pytest.skip("Per-expert weights applied to a shared activation are not supported")
-
-        input = 0.01 * np.arange(0, GROUPED_MM_NUM_TOKENS * GROUPED_MM_HIDDEN_DIM, dtype=np.float32) + 0.02
-        input = self.to_tensor(input.reshape(GROUPED_MM_NUM_TOKENS, GROUPED_MM_HIDDEN_DIM))
-        dataset = Dataset([input + i for i in range(4)], self.get_transform_func())
-        calc_q_params_spy = mocker.spy(ScaleEstimation, "calculate_quantization_params")
-
-        with SpyWeightCompressionStatisticsContext(mocker):
-            compress_weights(
-                model,
-                mode=CompressWeightsMode.INT4_ASYM,
-                ratio=1.0,
-                group_size=GROUPED_MM_GROUP_SIZE,
-                all_layers=True,
-                scale_estimation=True,
-                dataset=dataset,
-            )
-
-        # The scale is estimated only for the nodes for which activation statistics were collected.
-        assert calc_q_params_spy.call_count == 1
-        # A scale per expert, per output channel and per group of input channels.
-        assert calc_q_params_spy.spy_return[0].shape == (
-            GROUPED_MM_NUM_EXPERTS,
-            GROUPED_MM_OUT_DIM,
-            GROUPED_MM_HIDDEN_DIM // GROUPED_MM_GROUP_SIZE,
-            1,
-        )
-
-    def test_awq_for_grouped_matmul(self, mocker):
-        """Checks that the experts share a single AWQ scale, which is inserted on their shared activation."""
-        try:
-            model = self.get_grouped_matmul_model(num_stages=2)
-        except NotImplementedError:
-            pytest.skip("Per-expert weights applied to a shared activation are not supported")
-
-        input = 0.01 * np.arange(0, GROUPED_MM_NUM_TOKENS * GROUPED_MM_HIDDEN_DIM, dtype=np.float32) + 0.02
-        input = self.to_tensor(input.reshape(GROUPED_MM_NUM_TOKENS, GROUPED_MM_HIDDEN_DIM))
-        dataset = Dataset([input + i for i in range(4)], self.get_transform_func())
-        awq_step_spy = mocker.spy(AWQ, "_data_aware_step")
-
-        compressed_model = compress_weights(
-            model,
-            mode=CompressWeightsMode.INT4_ASYM,
-            ratio=1.0,
-            group_size=GROUPED_MM_GROUP_SIZE,
-            all_layers=True,
-            awq=True,
-            dataset=dataset,
-        )
-
-        # Only the second stage is preceded by an activation function, so only it matches an AWQ pattern.
-        assert awq_step_spy.call_count == 1
-        # A single scale per input channel is shared by all the experts, instead of one scale per expert.
-        assert awq_step_spy.spy_return.shape == (GROUPED_MM_OUT_DIM,)
-        # The reciprocal scale is inserted on the activation shared by the experts.
-        assert self.get_num_multiply_from_awq(compressed_model) == 1
 
     def test_shared_activation_statistics_match_per_expert_ones(self):
         """Checks that statistics shared between the experts give the same result as per-expert ones."""

@@ -2424,12 +2424,10 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
         return MatMul(transpose_a=transpose_a).ov_model
 
     @staticmethod
-    def get_moe_model_for_test_scale_estimation(transpose_a: bool):
+    def get_moe_model_for_test_scale_estimation(transpose_a: bool, grouped_mm: bool = False):
+        if grouped_mm:
+            return GroupedMatMulModel().ov_model
         return SimpleMoEModel(transpose_a=transpose_a).ov_model
-
-    @staticmethod
-    def get_grouped_matmul_model(num_stages: int) -> ov.Model:
-        return GroupedMatMulModel(num_stages=num_stages).ov_model
 
     @staticmethod
     def get_awq_model(non_mergable_pattern: bool, is_3d_weights: bool) -> ov.Model:
@@ -2524,7 +2522,84 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
         )[check_sampling_activation_stats_flow]
 
     @staticmethod
-    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow):
+    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow, grouped_mm=False):
+        if grouped_mm:
+            return (
+                np.array(
+                    [
+                        0.05974853,
+                        0.056493402,
+                        0.049523145,
+                        0.038399905,
+                        0.050656088,
+                        0.041851595,
+                        0.054527745,
+                        0.045888707,
+                        0.047895495,
+                        0.037991188,
+                        0.032691956,
+                        0.064432584,
+                        0.04732547,
+                        0.05635659,
+                        0.053615674,
+                        0.049346175,
+                        0.041290961,
+                        0.048774205,
+                        0.06411536,
+                        0.059871621,
+                        0.051852781,
+                        0.054146998,
+                        0.054477807,
+                        0.04695262,
+                        0.071511693,
+                        0.052236509,
+                        0.048286483,
+                        0.056333181,
+                        0.047020726,
+                        0.051853277,
+                        0.045663178,
+                        0.065750599,
+                    ],
+                    dtype=np.float32,
+                ).reshape(2, 16, 1, 1),
+                np.array(
+                    [
+                        0.05974853,
+                        0.056485206,
+                        0.049503759,
+                        0.038407952,
+                        0.050668351,
+                        0.041849129,
+                        0.054527745,
+                        0.045910373,
+                        0.047869131,
+                        0.037991188,
+                        0.032690503,
+                        0.064432584,
+                        0.047352426,
+                        0.056332365,
+                        0.053614073,
+                        0.049346175,
+                        0.041307203,
+                        0.048763826,
+                        0.064073741,
+                        0.059852809,
+                        0.05190089,
+                        0.054146998,
+                        0.054477807,
+                        0.047002099,
+                        0.07273826,
+                        0.052213214,
+                        0.048287004,
+                        0.056333181,
+                        0.047020726,
+                        0.051828429,
+                        0.045684315,
+                        0.06571041,
+                    ],
+                    dtype=np.float32,
+                ).reshape(2, 16, 1, 1),
+            )[check_sampling_activation_stats_flow]
         return (
             np.array(
                 [
@@ -2684,9 +2759,9 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
 
     @staticmethod
     @pytest.fixture
-    def test_awq_scale_ref() -> list[dict[str, Tensor]]:
-        return [
-            {
+    def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
+        return {
+            "2d": {
                 "MatMul": Tensor(np.array([[10.337929], [6.4558873]], dtype=np.float32)),
                 "MatMul_3": Tensor(
                     np.array(
@@ -2723,7 +2798,7 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-            {
+            "3d": {
                 "MatMul": Tensor(
                     np.array(
                         [
@@ -2781,7 +2856,15 @@ class TestOVTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-        ]
+            "grouped_mm": {
+                "GroupedMatMul": Tensor(
+                    np.array(
+                        [[5.1277137, 5.0582132, 4.8410268, 4.6444707, 4.465559, 4.3018713, 4.151423, 4.0125704]],
+                        dtype=np.float32,
+                    )
+                ),
+            },
+        }
 
     @pytest.fixture
     def transpose_a_supported(self) -> bool:

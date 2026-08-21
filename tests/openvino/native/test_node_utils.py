@@ -177,9 +177,9 @@ def test_get_weight_channel_axes_for_grouped_matmul():
 @pytest.mark.parametrize(
     "input_shape,expected_channel_axis",
     [
-        # 2D x 3D: a single activation shared by all the experts.
+        # 2D act x 3D weight
         ((512, 2048), 1),
-        # 3D x 3D: one activation per expert.
+        # 3D act x 3D weight
         ((256, 512, 2048), 2),
     ],
 )

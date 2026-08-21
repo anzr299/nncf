@@ -97,19 +97,8 @@ class SimpleMoEModel(OVReferenceModel):
 
 
 class GroupedMatMulModel(OVReferenceModel):
-    """
-    A model with GroupedMatMul operations, which is how MoE experts are represented in OpenVINO.
-    A single 2D activation of shape [num_tokens, hidden_dim] is split between the experts by the offsets,
-    and each expert is applied to its own rows with its own weight matrix of shape [out_dim, hidden_dim].
-    Several stages can be chained through an activation function, mirroring the projections of an MoE block.
-    """
-
-    def _create_ov_model(self, num_experts=2, hidden_dim=8, out_dim=16, num_tokens=4, num_stages=1):
+    def _create_ov_model(self, num_experts=2, hidden_dim=8, out_dim=16, num_tokens=4):
         input_1 = opset.parameter([num_tokens, hidden_dim], name="Input")
-
-        # Cumulative end-offsets which split the rows of the activation evenly between the experts. They are
-        # derived from the activation, as they are produced by the router in an MoE block, so that they do
-        # not become a constant subgraph. The added value is always zero.
         zero = opset.convert(
             opset.reduce_sum(opset.multiply(input_1, opset.constant(0.0, np.float32)), reduction_axes=[0, 1]),
             np.int32,
@@ -117,14 +106,10 @@ class GroupedMatMulModel(OVReferenceModel):
         tokens_per_expert = opset.constant(np.full(num_experts, num_tokens // num_experts, dtype=np.int32))
         offsets = opset.cumsum(opset.add(tokens_per_expert, zero), opset.constant(0, np.int64), name="offsets")
 
-        node, in_dim = input_1, hidden_dim
-        for stage in range(num_stages):
-            stage_out_dim = out_dim if stage % 2 == 0 else hidden_dim
-            weight_data = self._rng.random((num_experts, stage_out_dim, in_dim)).astype(np.float32) - 0.5
-            weight = opset.constant(weight_data, name=f"grouped_matmul_data_{stage}")
-            node = opset17.grouped_matmul(node, weight, offsets, name=f"GroupedMatMul_{stage}")
-            node = opset.swish(node, name=f"Swish_{stage}")
-            in_dim = stage_out_dim
+        weight_data = self._rng.random((num_experts, out_dim, hidden_dim)).astype(np.float32) - 0.5
+        weight = opset.constant(weight_data, name="grouped_matmul_data")
+        node = opset.swish(input_1, name="Swish")
+        node = opset17.grouped_matmul(node, weight, offsets, name="GroupedMatMul")
 
         result = opset.result(node, name="Result")
         result.get_output_tensor(0).set_names(set(["Result"]))

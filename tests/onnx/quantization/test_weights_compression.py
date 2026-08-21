@@ -526,12 +526,10 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
         return mb.build(opset_version=21)
 
     @staticmethod
-    def get_grouped_matmul_model(num_stages: int) -> onnx.ModelProto:
-        msg = "There is no operation which applies per-expert weights to a shared activation in this backend."
-        raise NotImplementedError(msg)
-
-    @staticmethod
-    def get_moe_model_for_test_scale_estimation(transpose_a: bool) -> onnx.ModelProto:
+    def get_moe_model_for_test_scale_estimation(transpose_a: bool, grouped_mm: bool = False) -> onnx.ModelProto:
+        if grouped_mm:
+            msg = "GroupedMatMul is not supported in the ONNX backend."
+            raise NotImplementedError(msg)
         if transpose_a:
             msg = "ONNX does not support transpose_a + MoE"
             pytest.skip(msg)
@@ -598,7 +596,7 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
         )[check_sampling_activation_stats_flow]
 
     @staticmethod
-    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow):
+    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow, grouped_mm=False):
         return (
             np.array(
                 [
@@ -861,9 +859,9 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
 
     @staticmethod
     @pytest.fixture
-    def test_awq_scale_ref() -> list[dict[str, Tensor]]:
-        return [
-            {
+    def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
+        return {
+            "2d": {
                 "Gemm_1": Tensor(np.array([[14.299703], [8.364688]], dtype=np.float32)),
                 "MatMul_3": Tensor(
                     np.array(
@@ -902,7 +900,7 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-            {
+            "3d": {
                 "MatMul_3": Tensor(
                     np.array(
                         [
@@ -955,7 +953,7 @@ class TestONNXTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-        ]
+        }
 
     @staticmethod
     def get_transform_func() -> Callable[..., Any] | None:

@@ -598,12 +598,10 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
         return LinearModel()
 
     @staticmethod
-    def get_grouped_matmul_model(num_stages: int) -> torch.nn.Module:
-        msg = "There is no operation which applies per-expert weights to a shared activation in this backend."
-        raise NotImplementedError(msg)
-
-    @staticmethod
-    def get_moe_model_for_test_scale_estimation(transpose_a: bool):
+    def get_moe_model_for_test_scale_estimation(transpose_a: bool, grouped_mm: bool = False):
+        if grouped_mm:
+            msg = "GroupedMatMul is not supported in the PyTorch backend."
+            raise NotImplementedError(msg)
         if transpose_a:
             pytest.skip("transpose_a=True is not supported for PT backend")
         num_experts = 2
@@ -705,7 +703,7 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
         )[check_sampling_activation_stats_flow]
 
     @staticmethod
-    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow):
+    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow, grouped_mm=False):
         return (
             torch.tensor(
                 [
@@ -858,9 +856,9 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
 
     @staticmethod
     @pytest.fixture
-    def test_awq_scale_ref() -> list[dict[str, Tensor]]:
-        return [
-            {
+    def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
+        return {
+            "2d": {
                 "linear3/linear/0": Tensor(
                     torch.tensor(
                         [
@@ -896,7 +894,7 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-            {
+            "3d": {
                 "/bmm/2": Tensor(
                     torch.tensor(
                         [
@@ -916,7 +914,7 @@ class TestPTTemplateWeightCompression(TemplateWeightCompression):
                     )
                 ),
             },
-        ]
+        }
 
     @staticmethod
     def get_transposable_awq_model(transpose_a: bool, transpose_b: bool, input_shape=None, is_3d_weights: bool = False):
