@@ -9,11 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
+import os
 from abc import ABC
 from abc import abstractmethod
 from dataclasses import dataclass
 from functools import reduce
 from operator import mul
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 from unittest.mock import patch
 
@@ -45,6 +47,8 @@ from nncf.quantization.algorithms.weight_compression.weight_lowering import inte
 from nncf.scopes import IgnoredScope
 from nncf.tensor import Tensor
 from nncf.tensor import TensorDataType
+from tests.cross_fw.shared.json import dump_to_json
+from tests.cross_fw.shared.json import load_json
 
 TModel = TypeVar("TModel")
 TTensor = TypeVar("TTensor")
@@ -265,10 +269,9 @@ class TemplateWeightCompression(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_scale_estimation_ref() -> dict[str, tuple[TTensor, TTensor]]:
+    def get_scale_estimation_ref_path() -> Path:
         """
-        Returns the reference output of calculate_quantization_params of ScaleEstimation., keyed by the model
-        type and the activation statistics flow.
+        Returns path to the file with the reference output of calculate_quantization_params of ScaleEstimation
         """
 
     @pytest.mark.parametrize(
@@ -277,9 +280,7 @@ class TemplateWeightCompression(ABC):
         ids=["reg", "reg_tr_a", "moe_bmm", "moe_bmm_tr_a", "moe_grouped_mm"],
     )
     @pytest.mark.parametrize("check_sampling_activation_stats_flow", [False, True], ids=["full", "sampled"])
-    def test_scale_estimation(
-        self, mocker, transpose_a, model_type, check_sampling_activation_stats_flow, get_scale_estimation_ref
-    ):
+    def test_scale_estimation(self, mocker, transpose_a, model_type, check_sampling_activation_stats_flow):
         """Checks that scales match the reference."""
         calc_q_params_spy = mocker.spy(ScaleEstimation, "calculate_quantization_params")
 
@@ -323,7 +324,15 @@ class TemplateWeightCompression(ABC):
 
         computed_scale = calc_q_params_spy.spy_return[0]
 
-        reference = get_scale_estimation_ref[model_type][check_sampling_activation_stats_flow]
+        ref_key = f"{model_type}_{'sampled' if check_sampling_activation_stats_flow else 'full'}"
+        ref_path = self.get_scale_estimation_ref_path()
+
+        if os.getenv("NNCF_TEST_REGEN_DOT") is not None:
+            ref_scales = load_json(ref_path)
+            ref_scales[ref_key] = computed_scale.as_numpy_tensor().data
+            dump_to_json(ref_path, ref_scales)
+
+        reference = self.to_tensor(load_json(ref_path)[ref_key])
         assert fns.allclose(Tensor(reference), computed_scale)
 
     @staticmethod
@@ -759,9 +768,10 @@ class TemplateWeightCompression(ABC):
 
     @staticmethod
     @abstractmethod
-    @pytest.fixture
-    def test_awq_scale_ref() -> dict[str, dict[str, Tensor]]:
-        "Returns reference for test_awq_scale_reference, keyed by the kind of weights."
+    def get_awq_scale_ref_path() -> Path:
+        """
+        Returns path to the file with the reference scales for test_awq_scale_reference.
+        """
 
     # Transpose inputs does not affect mergable pattern code, skippting (True, False)
     @pytest.mark.parametrize(
@@ -781,7 +791,6 @@ class TemplateWeightCompression(ABC):
         self,
         non_mergable_pattern,
         transpose_a,
-        test_awq_scale_ref,
         model_type,
         monkeypatch,
         mocker,
@@ -820,8 +829,18 @@ class TemplateWeightCompression(ABC):
         assert spy_instance is not None
         if model_type == "moe_grouped_mm":
             assert spy_instance._scale_per_target_node
+
+        ref_path = self.get_awq_scale_ref_path()
+        if os.getenv("NNCF_TEST_REGEN_DOT") is not None:
+            ref_scales = load_json(ref_path)
+            ref_scales.setdefault(model_type, {}).update(
+                {name: scales.as_numpy_tensor().data for name, scales in spy_instance._scale_per_target_node.items()}
+            )
+            dump_to_json(ref_path, ref_scales)
+
+        model_ref_scales = load_json(ref_path)[model_type]
         for node_name, scales in spy_instance._scale_per_target_node.items():
-            ref = test_awq_scale_ref[model_type][node_name]
+            ref = Tensor(self.to_tensor(model_ref_scales[node_name]))
             assert fns.allclose(scales, ref)
             assert scales.shape == ref.shape
 
