@@ -265,21 +265,10 @@ class TemplateWeightCompression(ABC):
 
     @staticmethod
     @abstractmethod
-    def get_moe_scale_estimation_ref(check_sampling_activation_stats_flow: bool, grouped_mm: bool = False) -> TTensor:
+    def get_scale_estimation_ref() -> dict[str, tuple[TTensor, TTensor]]:
         """
-        :param check_sampling_activation_stats_flow: whether we are checking the flow with sampling when processing
-            activation statistics
-        :param grouped_mm: whether the reference is for the GroupedMatMul MoE model
-        Returns the reference output of calculate_quantization_params for MoE model.
-        """
-
-    @staticmethod
-    @abstractmethod
-    def get_scale_estimation_ref(check_sampling_activation_stats_flow: bool) -> TTensor:
-        """
-        :param check_sampling_activation_stats_flow: whether we are checking the flow with sampling when processing
-            activation statistics
-        Returns the reference output of calculate_quantization_params of ScaleEstimation.
+        Returns the reference output of calculate_quantization_params of ScaleEstimation., keyed by the model
+        type and the activation statistics flow.
         """
 
     @pytest.mark.parametrize(
@@ -288,7 +277,9 @@ class TemplateWeightCompression(ABC):
         ids=["reg", "reg_tr_a", "moe_bmm", "moe_bmm_tr_a", "moe_grouped_mm"],
     )
     @pytest.mark.parametrize("check_sampling_activation_stats_flow", [False, True], ids=["full", "sampled"])
-    def test_scale_estimation(self, mocker, transpose_a, model_type, check_sampling_activation_stats_flow):
+    def test_scale_estimation(
+        self, mocker, transpose_a, model_type, check_sampling_activation_stats_flow, get_scale_estimation_ref
+    ):
         """Checks that scales match the reference."""
         calc_q_params_spy = mocker.spy(ScaleEstimation, "calculate_quantization_params")
 
@@ -332,13 +323,7 @@ class TemplateWeightCompression(ABC):
 
         computed_scale = calc_q_params_spy.spy_return[0]
 
-        if model_type.startswith("moe"):
-            reference = self.get_moe_scale_estimation_ref(
-                check_sampling_activation_stats_flow, grouped_mm=model_type == "moe_grouped_mm"
-            )
-        else:
-            reference = self.get_scale_estimation_ref(check_sampling_activation_stats_flow)
-
+        reference = get_scale_estimation_ref[model_type][check_sampling_activation_stats_flow]
         assert fns.allclose(Tensor(reference), computed_scale)
 
     @staticmethod
