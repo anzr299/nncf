@@ -924,22 +924,41 @@ def test_raise_error_with_unsupported_params_for_int4(mode, params):
 
 
 @pytest.mark.parametrize(
-    "custom_annotation",
+    "custom_annotation, error",
     (
-        nncf.CustomAnnotation(),
-        ["anything"],
-        [nncf.CustomAnnotation(scope=nncf.IgnoredScope())],
-        [nncf.CustomAnnotation(config="anything")],
-        [
-            nncf.CustomAnnotation(
-                config=WeightCompressionConfig(mode=CompressWeightsMode.CODEBOOK, codebook_values=None)
-            )
-        ],
+        (nncf.CustomAnnotation(), nncf.ValidationError),
+        (["anything"], nncf.ValidationError),
+        ([nncf.CustomAnnotation(scope=nncf.IgnoredScope())], nncf.ValidationError),
+        ([nncf.CustomAnnotation(config="anything")], nncf.ValidationError),
+        (
+            [
+                nncf.CustomAnnotation(
+                    config=WeightCompressionConfig(mode=CompressWeightsMode.CODEBOOK, codebook_values=None)
+                )
+            ],
+            nncf.ValidationError,
+        ),
+        (
+            [nncf.CustomAnnotation(config=WeightCompressionConfig(mode=CompressWeightsMode.INT8_SYM, group_size=4))],
+            nncf.ParameterNotSupportedError,
+        ),
+        (
+            [nncf.CustomAnnotation(config=WeightCompressionConfig(mode=CompressWeightsMode.INT8_ASYM, group_size=4))],
+            nncf.ParameterNotSupportedError,
+        ),
     ),
-    ids=["not_a_list", "not_an_annotation", "wrong_scope", "wrong_config", "codebook_without_values"],
+    ids=[
+        "not_a_list",
+        "not_an_annotation",
+        "wrong_scope",
+        "wrong_config",
+        "codebook_without_values",
+        "int8_sym_with_group_size",
+        "int8_asym_with_group_size",
+    ],
 )
-def test_raise_error_with_invalid_custom_annotation(custom_annotation):
-    with pytest.raises(nncf.ValidationError):
+def test_raise_error_with_invalid_custom_annotation(custom_annotation, error):
+    with pytest.raises(error):
         compress_weights(ov.Model([], []), mode=CompressWeightsMode.INT4_SYM, custom_annotation=custom_annotation)
 
 

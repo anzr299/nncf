@@ -169,15 +169,17 @@ class CustomAnnotationScope(BaseScope):
     """
 
 
-def get_difference_scope(scope_1: BaseScope, scope_2: BaseScope) -> IgnoredScope:
+def get_difference_scope(scope_1: BaseScope, scope_2: BaseScope) -> BaseScope:
     """
-    Returns scope with rules from 'scope_1' not presented at 'scope_2'
+    Returns scope with rules from 'scope_1' not presented at 'scope_2'.
+    The returned scope has the same type as 'scope_1'.
 
     :param scope_1: First scope.
     :param scope_2: Second scope.
     :return: Scope with the rules difference.
     """
-    return IgnoredScope(
+    cls = scope_1.__class__
+    return cls(
         names=list(set(scope_1.names) - set(scope_2.names)),
         patterns=list(set(scope_1.patterns) - set(scope_2.patterns)),
         types=list(set(scope_1.types) - set(scope_2.types)),
@@ -206,10 +208,10 @@ def convert_ignored_scope_to_list(ignored_scope: IgnoredScope | None) -> list[st
     return results
 
 
-def get_matched_scope_info(scope: BaseScope, nncf_graphs: list[NNCFGraph]) -> tuple[IgnoredScope, dict[str, set[str]]]:
+def get_matched_scope_info(scope: BaseScope, nncf_graphs: list[NNCFGraph]) -> tuple[BaseScope, dict[str, set[str]]]:
     """
     Returns matched scope for provided graphs along with all found matches.
-    The resulted scope consist of all matched rules.
+    The resulted scope consist of all matched rules and has the same type as the given scope.
     The found matches consist of a dictionary with a rule name as a key and matched node names as a value.
 
     :param scope: Scope instance.
@@ -243,7 +245,8 @@ def get_matched_scope_info(scope: BaseScope, nncf_graphs: list[NNCFGraph]) -> tu
                 matches["subgraphs"].update(names_from_subgraph)
                 subgraphs_numbers.add(i)
 
-    matched_scope = IgnoredScope(
+    cls = scope.__class__
+    matched_scope = cls(
         names=list(names),
         patterns=list(patterns),
         types=list(types),
@@ -265,7 +268,7 @@ def _info_matched_scope(matches: dict[str, set[str]], scope_kind: str = "Ignored
             nncf_logger.info(f"{len(rules)} {scope_kind.lower()} nodes were found by {rule_type} in the NNCFGraph")
 
 
-def _error_unmatched_scope(unmatched_scope: IgnoredScope, scope_kind: str = "Ignored") -> str:
+def _error_unmatched_scope(unmatched_scope: BaseScope, scope_kind: str = "Ignored") -> str:
     """
     Returns an error message for unmatched scope.
 
@@ -288,7 +291,7 @@ def _error_unmatched_scope(unmatched_scope: IgnoredScope, scope_kind: str = "Ign
     return err_msg
 
 
-def _check_scope_strictly_matched(scope: BaseScope, matched_scope: IgnoredScope, scope_kind: str = "Ignored") -> None:
+def _check_scope_strictly_matched(scope: BaseScope, matched_scope: BaseScope, scope_kind: str = "Ignored") -> None:
     """
     Passes when scope and matched_scope are equal, otherwise - raises ValidationError.
 

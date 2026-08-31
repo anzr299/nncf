@@ -141,7 +141,7 @@ def get_weight_compression_configuration(
     }
 
 
-def check_custom_annotation(custom_annotation: list[CustomAnnotation] | None) -> None:
+def validate_custom_annotation(custom_annotation: list[CustomAnnotation] | None) -> None:
     """
     Validates the user-defined custom annotation.
 
@@ -186,6 +186,14 @@ def check_custom_annotation(custom_annotation: list[CustomAnnotation] | None) ->
             )
             raise nncf.ValidationError(msg)
 
+        if annotation.config.mode in INT8_MODES and annotation.config.group_size != -1:
+            msg = (
+                "INT8 modes require per-channel quantization in 8 bit, so the group size of a custom annotation "
+                f"with the {annotation.config.mode.value} mode must be -1, but "
+                f"group_size={annotation.config.group_size} is given."
+            )
+            raise nncf.ParameterNotSupportedError(msg)
+
 
 def check_user_compression_configuration(
     mode: CompressWeightsMode,
@@ -208,7 +216,7 @@ def check_user_compression_configuration(
     """
     Validates the user's weight compression configuration for correctness.
     """
-    check_custom_annotation(custom_annotation)
+    validate_custom_annotation(custom_annotation)
     if mode in INT8_MODES:
         if (ratio and ratio != 1) or (group_size and group_size != -1):
             msg = (
