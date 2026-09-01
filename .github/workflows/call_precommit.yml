@@ -188,6 +188,8 @@ jobs:
         if: ${{ inputs.override_requirements != '' }}
         run: python .github/scripts/override_constraints.py "${{ inputs.override_requirements }}"
         shell: bash
+      - name: Install CUDA-enabled PyTorch
+        run: uv pip install --system -r tests/torch/requirements_cuda.txt
       - name: Install NNCF and test requirements
         run: uv pip install --system . -r tests/torch/requirements.txt
       - name: Print installed modules
