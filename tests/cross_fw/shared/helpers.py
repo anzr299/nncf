@@ -15,6 +15,7 @@ from typing import Callable
 
 from tests.cross_fw.shared.paths import GITHUB_REPO_URL
 from tests.cross_fw.shared.paths import PROJECT_ROOT
+from tests.cross_fw.shared.paths import TEST_ROOT
 
 
 def is_windows() -> bool:
@@ -37,6 +38,10 @@ def get_cli_dict_args(args):
 
 MAP_BACKEND_PACKAGES = {
     "torch": ["torch", "torchvision", "torchao"],
+    # Installed from a requirements file that pins the wheel index, so that the CUDA runtime of
+    # torch matches the CUDA toolkit of the machine. The default wheels on PyPI may target
+    # another CUDA major version, which the driver or the built extensions do not support.
+    "torch_cuda": [f"-r {TEST_ROOT / 'torch' / 'requirements_cuda.txt'}"],
     "torchfx": ["torch", "torchvision", "torchao"],
     "openvino": ["openvino"],
     "onnx": ["onnx", "onnxruntime"],
