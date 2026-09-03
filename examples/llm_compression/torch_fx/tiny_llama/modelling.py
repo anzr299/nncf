@@ -22,8 +22,8 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 # TODO(anazir299): Remove after this is moved to openvino
-if hasattr(torch._dynamo.config, "install_free_tensors"):
-    torch._dynamo.config.install_free_tensors = True
+if hasattr(torch._dynamo.config, "prepare_freezing"):
+    torch._dynamo.config.prepare_freezing = True
 
 
 class FXAutoModelForCausalLM(OptimizedModel, GenerationMixin):
