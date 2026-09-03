@@ -30,6 +30,10 @@ import nncf
 from nncf.common.utils.helpers import create_table
 from nncf.common.utils.os import is_windows
 
+# TODO(anazir299): Remove after this is moved to openvino
+if hasattr(torch._dynamo.config, "install_free_tensors"):
+    torch._dynamo.config.install_free_tensors = True
+
 IMAGE_SIZE = 64
 
 

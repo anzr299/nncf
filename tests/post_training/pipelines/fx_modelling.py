@@ -19,6 +19,10 @@ from transformers import PreTrainedModel
 from transformers.integrations.executorch import TorchExportableModuleWithStaticCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+# TODO(anazir299): Remove after this is moved to openvino
+if hasattr(torch._dynamo.config, "install_free_tensors"):
+    torch._dynamo.config.install_free_tensors = True
+
 
 class FXAutoModelForCausalLM(OptimizedModel, GenerationMixin):
     def __init__(
