@@ -24,7 +24,10 @@ logging.set_verbosity_error()
 warnings.filterwarnings("ignore", category=TracerWarning)
 
 
+# MODEL_ID = "Qwen/Qwen3.5-35B-A3B"
 MODEL_ID = "optimum-intel-internal-testing/tiny-random-qwen3.5-moe"
+
+# COMPRESSED_MODEL_ID = "qwen3.5-moe_compressed"
 COMPRESSED_MODEL_ID = "tiny-random-qwen3.5-moe_compressed"
 
 
@@ -129,6 +132,24 @@ def main() -> None:
 
     calibration_dataset = get_dummy_dataset(model.language_model.model)
 
+    custom_annotation = [
+        # Sparse experts, gate_proj and up_proj
+        nncf.CustomAnnotation(
+            scope=nncf.CustomAnnotationScope(patterns=[r".*mlp/aten::bmm/MatMul$", r".*mlp/aten::bmm/MatMul_1$"]),
+            config=nncf.WeightCompressionConfig(mode=nncf.CompressWeightsMode.INT2_SYM, group_size=64),
+        ),
+        # Sparse experts, down_proj
+        nncf.CustomAnnotation(
+            scope=nncf.CustomAnnotationScope(patterns=[r".*mlp/aten::bmm/MatMul_2$"]),
+            config=nncf.WeightCompressionConfig(mode=nncf.CompressWeightsMode.INT3_SYM, group_size=64),
+        ),
+        # Router (mlp.gate, mlp.shared_expert_gate) and all shared experts
+        nncf.CustomAnnotation(
+            scope=nncf.CustomAnnotationScope(patterns=[r".*mlp\.gate/.*", r".*mlp\.shared_expert.*"]),
+            config=nncf.WeightCompressionConfig(mode=nncf.CompressWeightsMode.INT8_ASYM),
+        ),
+    ]
+
     model.language_model.model = nncf.compress_weights(
         model.language_model.model,
         mode=nncf.CompressWeightsMode.INT4_ASYM,
@@ -136,6 +157,7 @@ def main() -> None:
         awq=True,
         dataset=calibration_dataset,
         group_size=16,
+        custom_annotation=custom_annotation,
         advanced_parameters=nncf.AdvancedCompressionParameters(
             group_size_fallback_mode=nncf.GroupSizeFallbackMode.ADJUST
         ),
