@@ -1,0 +1,13 @@
+{
+  "mode": "int4_sym",
+  "group_size": 128,
+  "ratio": 1.0,
+  "scoped_configs": [
+    {
+      "patterns": ["model/(self_attn|linear_attn)/", "model/mlp/(gate|shared_expert|shared_expert_gate)/", "model/embed_tokens/", "lm_head/"],
+      "mode": "int8_asym",
+      "group_size": -1
+    }
+  ],
+  "ignored_scope": {"names": []}
+}
